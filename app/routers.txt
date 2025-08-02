@@ -1,0 +1,864 @@
+jobs.py
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from datetime import date
+from typing import List
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    File,
+    Form,
+    UploadFile,
+)
+from fastapi.responses import RedirectResponse, FileResponse
+from sqlalchemy.orm import Session
+from werkzeug.utils import secure_filename
+
+from app.core.config import settings
+from app.messages import (
+    FILE_LIMIT_EXCEEDED,
+    INVALID_FILE_TYPE,
+    DAILY_LIMIT_EXCEEDED
+)
+from .. import dependencies, models
+from ..dependencies import get_db
+from ..crud import transcriptions, users
+from ..tasks.text_tasks import background_text_correction_task
+from ..tasks.parallel_audio import parallel_audio_job
+
+router = APIRouter(
+    tags=["Jobs & Invoicing"],
+    dependencies=[Depends(dependencies.get_current_user_from_cookie)],
+)
+
+# ──────────────────────────────────────────────────────────────────────────────
+#                               AUDIO JOB
+# ──────────────────────────────────────────────────────────────────────────────
+@router.post("/transcribe/", summary="Create Audio Transcription Job")
+async def create_audio_job(
+    current_user: models.User = Depends(dependencies.get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+    files: List[UploadFile] = File(...),
+    language: str = Form(...),
+    use_ai_correction: bool = Form(False),
+):
+    # بررسی محدودیت روزانه
+    today = date.today()
+    if current_user.last_transcription_date != today:
+        current_user.daily_transcription_count = 0
+        db.commit()
+    db.refresh(current_user)
+
+    if len(files) > (current_user.file_limit - current_user.daily_transcription_count):
+        raise HTTPException(
+            status_code=403,
+            detail=FILE_LIMIT_EXCEEDED
+        )
+
+    # پردازش هر فایل
+    for file in files:
+        # اطمینان از نام امن برای فایل
+        original_name = file.filename
+        safe_name = secure_filename(original_name)
+        stored_path = Path(settings.UPLOAD_DIR) / safe_name
+
+        # ذخیره فایل
+        with stored_path.open("wb") as f:
+            f.write(await file.read())
+
+        # ایجاد نام نمایشی با پیشوند مناسب
+        prefix = settings.AI_PREFIX if use_ai_correction else settings.RAW_PREFIX
+        display = f"{prefix} {original_name}"
+
+        # ایجاد رکورد در دیتابیس
+        rec = transcriptions.create_transcription_record(
+            db,
+            filename=display,
+            user_id=current_user.id,
+            lang=language,
+            original_filename=original_name,
+        )
+
+        # ارسال کار به Celery
+        async_res = parallel_audio_job.delay(
+            rec.id,
+            str(stored_path),
+            language
+        )
+        transcriptions.set_task_id(db, rec.id, async_res.id)
+
+        # افزایش شمارنده روزانه
+        current_user.daily_transcription_count += 1
+        current_user.last_transcription_date = today
+        db.commit()
+
+    return RedirectResponse(
+        "/my-dashboard?msg=transcribe-queued",
+        status_code=303
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
+#                               TEXT JOB
+# ──────────────────────────────────────────────────────────────────────────────
+@router.post("/correct-text/", summary="Create Text Correction Job")
+async def create_text_job(
+    current_user: models.User = Depends(dependencies.get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+    files: List[UploadFile] = File(...),
+):
+    # بررسی محدودیت روزانه
+    today = date.today()
+    if current_user.last_transcription_date != today:
+        current_user.daily_transcription_count = 0
+        db.commit()
+    db.refresh(current_user)
+
+    if len(files) > (current_user.file_limit - current_user.daily_transcription_count):
+        raise HTTPException(
+            status_code=403,
+            detail=DAILY_LIMIT_EXCEEDED
+        )
+
+    # پردازش هر فایل
+    for file in files:
+        # بررسی نوع فایل
+        if not file.filename.endswith((".txt", ".docx")):
+            raise HTTPException(
+                status_code=400,
+                detail=INVALID_FILE_TYPE
+            )
+
+        # ذخیره فایل
+        original_name = file.filename
+        stored_path = Path(settings.UPLOAD_DIR) / secure_filename(original_name)
+        with stored_path.open("wb") as f:
+            f.write(await file.read())
+
+        # ایجاد رکورد در دیتابیس
+        rec = transcriptions.create_transcription_record(
+            db,
+            filename=f"(اصلاح متنی) {original_name}",
+            user_id=current_user.id,
+            lang="text",
+            original_filename=original_name,
+        )
+
+        # ارسال کار به Celery
+        async_res = background_text_correction_task.delay(
+            rec.id,
+            str(stored_path)
+        )
+        transcriptions.set_task_id(db, rec.id, async_res.id)
+
+        # افزایش شمارنده روزانه
+        current_user.daily_transcription_count += 1
+        current_user.last_transcription_date = today
+        db.commit()
+
+    return RedirectResponse(
+        "/my-dashboard?msg=text-correction-queued",
+        status_code=303
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
+#                               CANCEL JOB
+# ──────────────────────────────────────────────────────────────────────────────
+@router.post("/transcribe/{job_id}/cancel", summary="Cancel queued / running job")
+def cancel_job(
+    job_id: int,
+    current_user: models.User = Depends(dependencies.get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+):
+    # یافتن رکورد کار
+    rec = transcriptions.get_job(db, job_id, current_user)
+    if not rec:
+        raise HTTPException(404, "Job not found")
+    
+    # بررسی وضعیت کار
+    if rec.status in ("completed", "failed", "canceled"):
+        raise HTTPException(400, "Job cannot be canceled")
+    
+    # لغو کار در Celery
+    if rec.celery_task_id:
+        from ..celery_app import celery_app
+        celery_app.control.revoke(
+            rec.celery_task_id,
+            terminate=True,
+            signal="SIGKILL"
+        )
+    
+    # به‌روزرسانی وضعیت
+    transcriptions.update_transcription_status(db, job_id, "canceled")
+    
+    return RedirectResponse(
+        "/my-dashboard?msg=transcribe-canceled",
+        status_code=303
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
+#                               DOWNLOAD
+# ──────────────────────────────────────────────────────────────────────────────
+@router.get("/download/{record_id}/{file_type}", response_class=FileResponse, summary="Secure download")
+def secure_download(
+    record_id: int,
+    file_type: str,
+    current_user: models.User = Depends(dependencies.get_current_user_from_cookie),
+    db: Session = Depends(get_db),
+):
+    # یافتن رکورد
+    rec = transcriptions.get_transcription(db, record_id)
+    if not rec:
+        raise HTTPException(404)
+    
+    # بررسی مجوز دسترسی
+    if rec.user_id != current_user.id and current_user.role != models.Role.admin:
+        raise HTTPException(403)
+    
+    # تعیین نام فایل بر اساس نوع
+    if file_type == "txt":
+        fname = rec.output_filename_txt
+    elif file_type == "docx":
+        fname = rec.output_filename_docx
+    else:
+        raise HTTPException(400, "Invalid file type")
+    
+    if not fname:
+        raise HTTPException(404, "فایل خروجی ثبت نشده")
+    
+    # بررسی وجود فایل فیزیکی
+    fpath = Path(settings.UPLOAD_DIR) / fname
+    if not fpath.exists():
+        raise HTTPException(404, "فایل یافت نشد")
+    
+    return FileResponse(
+        str(fpath),
+        filename=fname,
+        media_type="application/octet-stream"
+    )
+
+
+external_api.py
+from fastapi import APIRouter, Depends, HTTPException
+from starlette.status import HTTP_202_ACCEPTED, HTTP_404_NOT_FOUND
+from sqlalchemy.orm import Session
+from app.crud import get_transcription_by_external_id
+from ..dependencies import get_db
+from ..schemas_external import ExternalJobCreate, JobQueuedResp, JobStatusResp
+from ..auth_api import get_current_service_user
+from ..tasks import enqueue_external_job
+
+router = APIRouter(prefix="/v1", tags=["external-api"])
+
+@router.post("/jobs", response_model=JobQueuedResp, status_code=HTTP_202_ACCEPTED)
+def create_job(
+    payload: ExternalJobCreate,
+    db: Session = Depends(get_db),
+    service_user=Depends(get_current_service_user),
+):
+    job = create_external_job(db, service_user, payload)
+    
+    # بررسی وجود تابع enqueue_external_job
+    if not hasattr(enqueue_external_job, 'delay'):
+        raise HTTPException(
+            status_code=HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Job queue system not properly configured"
+        )
+    
+    enqueue_external_job.delay(
+        job_id=job.id,
+        file_url=payload.file_url,
+        language=payload.language,
+        mode=payload.mode,
+        callback_url=payload.callback_url,
+    )
+    return JobQueuedResp(
+        job_id=job.external_id,
+        status="queued",
+        estimated_cost=job.estimated_cost,
+    )
+
+@router.get("/jobs/{external_id}", response_model=JobStatusResp)
+def job_status(
+    external_id: str,
+    db: Session = Depends(get_db),
+    service_user=Depends(get_current_service_user),
+):
+    job = get_transcription_by_external_id(db, external_id, owner_id=service_user.id)
+    if not job:
+        HTTPException(
+            status_code=HTTP_404_NOT_FOUND,
+            detail="Job not found"
+        )
+    return JobStatusResp.from_orm(job)
+
+
+auth.py
+from datetime import timedelta
+from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.responses import RedirectResponse
+from sqlalchemy.orm import Session
+from app.core.config import settings
+from app.messages import INVALID_CREDENTIALS
+from .. import crud, auth, models, dependencies
+from ..templating import templates
+
+router = APIRouter(tags=["Authentication"])
+
+@router.post("/token")
+async def login_for_access_token(
+    request: Request, 
+    db: Session = Depends(dependencies.get_db)
+):
+    form = await request.form()
+    username, password = form.get("username"), form.get("password")
+    
+    user = crud.get_user_by_username(db, username=username)
+    if not user or not auth.verify_password(password, user.hashed_password):
+        return templates.TemplateResponse("login.html", {
+            "request": request,
+            "error": INVALID_CREDENTIALS
+        })
+
+    # تنظیم زمان انقضای توکن از تنظیمات مرکزی
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = auth.create_access_token(
+        data={"sub": user.username},
+        expires_delta=access_token_expires
+    )
+    
+    response = RedirectResponse(url="/dashboard", status_code=303)
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60
+    )
+    return response
+
+
+user.py
+import math
+from fastapi import APIRouter, Depends, Request, Query
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.orm import Session
+from app.core.config import settings
+from app.messages import (
+    PASSWORD_CHANGE_SUCCESS,
+    PASSWORD_CHANGE_ERROR,
+    INVALID_CREDENTIALS
+)
+from .. import crud, models, dependencies, auth
+from ..templating import templates
+
+router = APIRouter(
+    tags=["User Pages & Dashboard"],
+    dependencies=[Depends(dependencies.get_current_user_from_cookie)]
+)
+
+@router.get("/users/{user_id}/transcriptions", response_class=HTMLResponse)
+async def admin_view_user_transcriptions(
+    user_id: int,
+    request: Request,
+    page: int = Query(1, gt=0),
+    db: Session = Depends(dependencies.get_db),
+    current_user: models.User = Depends(dependencies.get_current_user_from_cookie),
+):
+    skip = (page - 1) * settings.PAGE_SIZE
+    total_items = crud.get_user_transcriptions_count(db, user_id=user_id)
+    transcriptions = crud.get_user_transcriptions(
+        db, user_id=user_id, skip=skip, limit=settings.PAGE_SIZE
+    )
+    total_pages = math.ceil(total_items / settings.PAGE_SIZE) if total_items > 0 else 1
+
+    return templates.TemplateResponse(
+        "admin_user_transcriptions.html",
+        {
+            "request": request,
+            "transcriptions": transcriptions,
+            "current_page": page,
+            "total_pages": total_pages,
+        },
+    )
+
+@router.post("/change-password")
+async def handle_change_password(
+    request: Request,
+    db: Session = Depends(dependencies.get_db),
+    current_user: models.User = Depends(dependencies.get_current_user_from_cookie),
+):
+    form = await request.form()
+    current_password = form.get("current_password")
+    new_password = form.get("new_password")
+
+    if not auth.verify_password(current_password, current_user.hashed_password):
+        return templates.TemplateResponse(
+            "change_password.html",
+            {
+                "request": request,
+                "error": INVALID_CREDENTIALS,
+            },
+        )
+
+    crud.update_user_password(db, current_user, new_password)
+    return templates.TemplateResponse(
+        "change_password.html",
+        {
+            "request": request,
+            "msg": PASSWORD_CHANGE_SUCCESS,
+        },
+    )
+
+
+admin.py
+import math
+from typing import Optional
+from fastapi import (
+    APIRouter,
+    Depends,
+    Request,
+    Form,
+    Query,
+    HTTPException,
+    status,
+)
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.orm import Session
+from app.core.config import settings
+from app.crud import users, transactions, transcriptions, settings as crud_settings
+from .. import crud, models, schemas
+from app import dependencies
+from ..templating import templates
+
+
+router = APIRouter(
+    prefix="/admin",
+    tags=["Admin Panel"],
+    dependencies=[Depends(dependencies.get_current_active_admin)]
+)
+
+# ══════════════════════════ HUB (صفحهٔ اصلی با تب‌ها)
+@router.get("/hub", response_class=HTMLResponse)
+async def admin_hub_page(
+    request: Request,
+    user_search: Optional[str] = Query(None),
+    transaction_search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    """
+    داشبورد واحد ادمین با چهار تب. همهٔ داده‌ها یک‌جا به قالب ارسال می‌شود.
+    """
+    # --- تب کاربران
+    users = crud.get_users(db, username_filter=user_search)
+
+    # --- تب فعالیت‌ها (۱۰۰ مورد آخر)
+    transcriptions = crud.get_all_transcriptions(db, skip=0, limit=100)
+
+    # --- تب تراکنش‌ها
+    skip_tx = (page - 1) * settings.PAGE_SIZE
+    tx_total_items = crud.get_all_transactions_count(db, username_filter=transaction_search)
+    transactions = crud.get_all_transactions(
+        db,
+        username_filter=transaction_search,
+        skip=skip_tx,
+        limit=settings.PAGE_SIZE,
+    )
+    tx_total_pages = max(math.ceil(tx_total_items / settings.PAGE_SIZE), 1)
+
+    # --- تب محتوا
+    pages = {
+        "about_page": "درباره ما",
+        "terms_page": "قوانین و مقررات",
+        "faq_page": "سؤال‌های متداول",
+        "pricing_page": "تعرفه‌ها",
+    }
+
+    return templates.TemplateResponse(
+        "admin_hub.html",
+        {
+            "request": request,
+            "user": current_admin,
+            "users": users,
+            "user_search": user_search,
+            "transcriptions": transcriptions,
+            "transactions": transactions,
+            "transaction_search": transaction_search,
+            "trans_current_page": page,
+            "trans_total_pages": tx_total_pages,
+            "pages": pages,
+        },
+    )
+
+# ────────────────────────── MANAGE USERS
+@router.get("/manage-users", response_class=HTMLResponse)
+async def admin_manage_users_page(
+    request: Request,
+    user_search: Optional[str] = Query(None),
+    partial: int = Query(0),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    users = crud.get_users(db, username_filter=user_search)
+
+    ctx = {
+        "request": request,
+        "user": current_admin,
+        "users": users,
+        "user_search": user_search,
+    }
+    tpl = "partials/manage_users_partial.html" if partial else "admin_manage_users.html"
+    return templates.TemplateResponse(tpl, ctx)
+
+
+@router.post("/create_user")
+async def admin_create_user(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    role: models.Role = Form(...),
+    file_limit: int = Form(...),
+    wallet_balance: float = Form(0.0),
+    token_price: float = Form(10.0),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    if crud.get_user_by_username(db, username=username):
+        users = crud.get_users(db)
+        return templates.TemplateResponse(
+            "admin_manage_users.html",
+            {
+                "request": request,
+                "user": current_admin,
+                "users": users,
+                "error": f"نام کاربری «{username}» قبلاً ثبت شده است.",
+            },
+        )
+
+    user_in = schemas.UserCreate(
+        username=username,
+        password=password,
+        role=role,
+        file_limit=file_limit,
+        wallet_balance=wallet_balance,
+        token_price=token_price,
+    )
+    crud.create_user(db, user_in)
+
+    return RedirectResponse(
+        url="/admin/manage-users?msg=user-created",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+# ────────────────────────── ALL ACTIVITIES
+@router.get("/all-activities", response_class=HTMLResponse)
+async def admin_all_activities_page(
+    request: Request,
+    page: int = Query(1, gt=0),
+    partial: int = Query(0),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    skip = (page - 1) * settings.PAGE_SIZE
+    total_items = crud.get_all_transcriptions_count(db)
+    activities = crud.get_all_transcriptions(db, skip=skip, limit=settings.PAGE_SIZE)
+    total_pages = max(math.ceil(total_items / settings.PAGE_SIZE), 1)
+
+    ctx = {
+        "request": request,
+        "user": current_admin,
+        "activities": activities,
+        "current_page_acts": page,
+        "total_pages_acts": total_pages,
+    }
+    tpl = "partials/all_activities_partial.html" if partial else "admin_all_activities.html"
+    return templates.TemplateResponse(tpl, ctx)
+
+# ────────────────────────── ALL TRANSACTIONS
+@router.get("/all-transactions", response_class=HTMLResponse)
+async def admin_all_transactions_page(
+    request: Request,
+    page: int = Query(1, gt=0),
+    transaction_search: Optional[str] = Query(None),
+    partial: int = Query(0),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    skip = (page - 1) * settings.PAGE_SIZE
+    total_items = crud.get_all_transactions_count(db, username_filter=transaction_search)
+    transactions = crud.get_all_transactions(
+        db,
+        username_filter=transaction_search,
+        skip=skip,
+        limit=settings.PAGE_SIZE,
+    )
+    total_pages = max(math.ceil(total_items / settings.PAGE_SIZE), 1)
+
+    ctx = {
+        "request": request,
+        "user": current_admin,
+        "transactions": transactions,
+        "current_page_txs": page,
+        "total_pages_txs": total_pages,
+        "transaction_search": transaction_search,
+    }
+    tpl = "partials/all_transactions_partial.html" if partial else "admin_all_transactions.html"
+    return templates.TemplateResponse(tpl, ctx)
+
+# ────────────────────────── CONTENT MANAGEMENT
+@router.get("/content", response_class=HTMLResponse)
+async def content_management_page(
+    request: Request,
+    partial: int = Query(0),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    editable_pages = {
+        "about_page": "درباره ما",
+        "terms_page": "قوانین و مقررات",
+        "faq_page": "سؤال‌های متداول",
+        "pricing_page": "تعرفه‌ها",
+    }
+
+    ctx = {"request": request, "user": current_admin, "pages": editable_pages}
+    tpl = "partials/content_mgt_partial.html" if partial else "admin_content_management.html"
+    return templates.TemplateResponse(tpl, ctx)
+
+
+@router.get("/content/edit/{page_key}", response_class=HTMLResponse)
+async def edit_content_form(
+    page_key: str,
+    request: Request,
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    page_titles = {
+        "about_page": "درباره ما",
+        "terms_page": "قوانین و مقررات",
+        "faq_page": "سؤال‌های متداول",
+        "pricing_page": "تعرفه‌ها",
+    }
+
+    setting = crud.get_setting(db, page_key)
+    content_val = setting.value if setting else ""
+
+    return templates.TemplateResponse(
+        "admin_edit_content.html",
+        {
+            "request": request,
+            "user": current_admin,
+            "page_key": page_key,
+            "page_title": page_titles.get(page_key, "صفحه"),
+            "content": content_val,
+        },
+    )
+
+
+@router.post("/content/edit/{page_key}")
+async def handle_edit_content(
+    page_key: str,
+    content: str = Form(...),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    crud.upsert_setting(db, key=page_key, value=content)
+    return RedirectResponse(
+        url=f"/admin/content/edit/{page_key}?msg=content-updated",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+# ────────────────────────── USER PROFILE
+@router.get("/users/{user_id}/profile", response_class=HTMLResponse)
+async def admin_view_user_profile(
+    user_id: int,
+    request: Request,
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    user_to_edit = crud.get_user(db, user_id=user_id)
+    if not user_to_edit:
+        raise HTTPException(status_code=404)
+
+    api_key = crud.get_api_key_by_user(db, user_to_edit) if hasattr(crud, 'get_api_key_by_user') else None
+
+    return templates.TemplateResponse(
+        "admin_user_profile.html",
+        {
+            "request": request,
+            "user": current_admin,
+            "user_to_edit": user_to_edit,
+            "api_key": api_key,
+        },
+    )
+
+
+@router.post("/users/{user_id}/profile")
+async def handle_edit_user_profile(
+    request: Request,
+    user_id: int,
+    username: str = Form(...),
+    file_limit: int = Form(...),
+    token_price: float = Form(...),
+    new_password: Optional[str] = Form(None),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    user_to_edit = crud.get_user(db, user_id=user_id)
+    if not user_to_edit:
+        raise HTTPException(status_code=404)
+
+    existing_user = crud.get_user_by_username(db, username=username)
+    if existing_user and existing_user.id != user_id:
+        return templates.TemplateResponse(
+            "admin_user_profile.html",
+            {
+                "request": request,
+                "user": current_admin,
+                "user_to_edit": user_to_edit,
+                "error": "این نام کاربری توسط کاربر دیگری استفاده شده است.",
+            },
+        )
+
+    crud.update_user_details(
+        db,
+        user_to_edit,
+        username=username,
+        file_limit=file_limit,
+        token_price=token_price,
+    )
+    if new_password:
+        crud.update_user_password(db, user_to_edit, new_password)
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}/profile?msg=details-updated",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+# ────────────────────────── USER TRANSACTIONS
+@router.get("/users/{user_id}/transactions", response_class=HTMLResponse)
+async def admin_view_user_transactions(
+    user_id: int,
+    request: Request,
+    page: int = Query(1, gt=0),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    user_to_edit = crud.get_user(db, user_id=user_id)
+    if not user_to_edit:
+        raise HTTPException(status_code=404)
+
+    skip = (page - 1) * settings.PAGE_SIZE
+    total_items = crud.get_user_transactions_count(db, user_id=user_id)
+    transactions = crud.get_user_transactions(db, user_id=user_id, skip=skip, limit=settings.PAGE_SIZE)
+    total_pages = max(math.ceil(total_items / settings.PAGE_SIZE), 1)
+
+    return templates.TemplateResponse(
+        "admin_user_transactions.html",
+        {
+            "request": request,
+            "user": current_admin,
+            "user_to_edit": user_to_edit,
+            "transactions": transactions,
+            "current_page": page,
+            "total_pages": total_pages,
+        },
+    )
+
+
+@router.post("/users/{user_id}/adjust_balance")
+async def handle_adjust_balance(
+    user_id: int,
+    amount: float = Form(...),
+    description: str = Form(...),
+    db: Session = Depends(dependencies.get_db),
+):
+    user_to_edit = crud.get_user(db, user_id=user_id)
+    if not user_to_edit:
+        raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
+
+    crud.adjust_user_balance(
+        db,
+        user=user_to_edit,
+        amount=amount,
+        description=description
+    )
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}/transactions?msg=balance-adjusted",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+@router.post("/users/{user_id}/create-api-key")
+async def create_api_key_for_user(
+    user_id: int,
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    user = crud.get_user(db, user_id=user_id)
+    if not user:
+        raise HTTPException(status_code=404)
+
+    existing = crud.get_api_key_by_user(db, user)
+    if existing:
+        return RedirectResponse(
+            url=f"/admin/users/{user_id}/profile?msg=already-exists",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    crud.create_api_key(db, user)
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}/profile?msg=key-created",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+@router.post("/users/{user_id}/deactivate-api-key")
+async def deactivate_api_key_for_user(
+    user_id: int,
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    user = crud.get_user(db, user_id=user_id)
+    if not user:
+        raise HTTPException(status_code=404)
+
+    api_key = crud.get_api_key_by_user(db, user)
+    if api_key:
+        crud.deactivate_api_key(db, api_key)
+
+    return RedirectResponse(
+        url=f"/admin/users/{user_id}/profile?msg=key-deactivated",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+@router.get("/users/{user_id}/transcriptions", response_class=HTMLResponse)
+async def admin_view_user_transcriptions(
+    user_id: int,
+    request: Request,
+    page: int = Query(1, gt=0),
+    db: Session = Depends(dependencies.get_db),
+    current_admin: models.User = Depends(dependencies.get_current_active_admin),
+):
+    user_to_edit = crud.get_user(db, user_id=user_id)
+    if not user_to_edit:
+        raise HTTPException(status_code=404)
+
+    skip = (page - 1) * settings.PAGE_SIZE
+    total_items = crud.get_user_transcriptions_count(db, user_id=user_id)
+    transcriptions = crud.get_user_transcriptions(db, user_id=user_id, skip=skip, limit=settings.PAGE_SIZE)
+    total_pages = max(math.ceil(total_items / settings.PAGE_SIZE), 1)
+
+    return templates.TemplateResponse(
+        "admin_user_transcriptions.html",
+        {
+            "request": request,
+            "user": current_admin,
+            "user_to_edit": user_to_edit,
+            "transcriptions": transcriptions,
+            "current_page": page,
+            "total_pages": total_pages,
+        },
+    )

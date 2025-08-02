@@ -1,0 +1,20 @@
+<!-- تب «مدیریت محتوا» -->
+<h2 style="margin-bottom:20px">مدیریت صفحات عمومی سایت</h2>
+<p>برای ویرایش محتوای هر صفحه، روی لینک مربوطه کلیک کنید.</p>
+
+<table data-datatables>
+    <thead>
+        <tr>
+            <th>نام صفحه</th>
+            <th>عملیات</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for key, title in pages.items() %}
+        <tr>
+            <td>{{ title }}</td>
+            <td><a href="/admin/content/edit/{{ key }}">ویرایش</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>

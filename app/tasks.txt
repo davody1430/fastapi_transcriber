@@ -1,0 +1,290 @@
+# app/tasks/parallel_audio.py
+# پردازش یک فایل صوتی به‌صورت ترتیبی، اما با قطعات موازی
+
+import os
+from pathlib import Path
+from celery import group, chord
+from sqlalchemy.orm import Session
+from app.celery_app import celery_app
+from app.database import SessionLocal
+from app import models, crud
+from app.services.audio_processing import AudioProcessor
+
+# بقیه کدها بدون تغییر
+from .helpers import to_clean_string
+
+# 🔹 تسک برای پیاده‌سازی یک قطعه از صوت
+@celery_app.task(name="transcribe_chunk")
+def transcribe_chunk(part_path: str, start_sec: int, end_sec: int, lang: str) -> dict:
+    import speech_recognition as sr
+
+    recognizer = sr.Recognizer()
+    with sr.AudioFile(part_path) as src:
+        audio_data = recognizer.record(src)
+
+    transcript = ""
+    for attempt in range(5):
+        try:
+            transcript = recognizer.recognize_google(audio_data, language=lang)
+            break
+        except sr.UnknownValueError:
+            break
+        except sr.RequestError:
+            if attempt < 4:
+                import time
+                time.sleep(1 + attempt)
+                continue
+            transcript = ""
+
+    if not transcript.strip():
+        transcript = f"({AudioProcessor.sec_to_mmss(start_sec)}-{AudioProcessor.sec_to_mmss(end_sec)})"
+
+    return {"start": start_sec, "end": end_sec, "text": transcript}
+
+# 🔹 مرحله نهایی بعد از همه chunkها
+@celery_app.task(name="finalize_chunks")
+def finalize_chunks(chunks_result: list[dict], record_id: int):
+    db: Session = SessionLocal()
+    try:
+        final_text = "\n".join(to_clean_string(r["text"]) for r in sorted(chunks_result, key=lambda x: x["start"]))
+        record = db.query(models.TranscriptionFile).get(record_id)
+        if not record:
+            raise ValueError("رکورد پیدا نشد")
+
+        record.raw_result_text = final_text
+        crud.transcriptions.finalize_job(db, record, final_text, 0)
+    finally:
+        db.commit()
+        db.close()
+
+# 🔹 وظیفه اصلی که فقط یک‌بار در لحظه اجرا می‌شود
+@celery_app.task(bind=True, name="parallel_audio_job")
+def parallel_audio_job(self, record_id: int, file_path: str, language: str):
+    db: Session = SessionLocal()
+    try:
+        record = db.query(models.TranscriptionFile).get(record_id)
+        if not record or record.status == "canceled":
+            return
+
+        crud.transcriptions.update_transcription_status(db, record_id, "processing")
+
+        # تقسیم فایل به قطعات
+        parts = AudioProcessor.split_audio(Path(file_path))
+        tasks = []
+        for idx, part in enumerate(parts):
+            start = idx * 50
+            end = start + 50
+            tasks.append(transcribe_chunk.s(str(part), start, end, language))
+
+        # اجرای موازی و سپس ذخیره نتیجه
+        chord(group(tasks), finalize_chunks.s(record_id)).delay()
+
+    finally:
+        db.close()
+
+
+# app/tasks/text_tasks.py
+# وظایف Celery برای پردازش و اصلاح فایل‌های متنی
+import os, time, concurrent.futures
+from sqlalchemy.orm import Session
+from pathlib import Path
+from app.celery_app import celery_app
+from app.database import SessionLocal
+from app import models, crud
+from app.services.text_processing import extract_text_from_docx, split_text_into_chunks
+from .helpers import correct_single_text_chunk
+
+@celery_app.task(bind=True, name="text_correct_task")
+def background_text_correction_task(self, record_id: int, file_path: str):
+    db: Session = SessionLocal()
+    start_time = time.time()
+
+    try:
+        for _ in range(3):
+            if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                break
+            time.sleep(1)
+        else:
+            raise ValueError("فایل برای پردازش در دسترس نیست.")
+
+        record = db.query(models.TranscriptionFile).get(record_id)
+        if not record or record.status == "canceled":
+            return
+
+        user = record.owner
+        crud.transcriptions.update_transcription_status(db, record_id, "processing")
+
+        if file_path.endswith(".txt"):
+            original_text = Path(file_path).read_text(encoding="utf-8")
+        elif file_path.endswith(".docx"):
+            original_text = extract_text_from_docx(file_path)
+        else:
+            raise ValueError("نوع فایل نامعتبر است.")
+
+        chunks = list(split_text_into_chunks(original_text))
+        tasks = [(i, c, user.token_price) for i, c in enumerate(chunks)]
+
+        corrected = {}
+        total_tokens = 0
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for idx, txt, used in executor.map(correct_single_text_chunk, tasks):
+                if "[خطا" in txt:
+                    raise ValueError(f"خطای AI در قطعه {idx}")
+                corrected[idx] = txt
+                total_tokens += used
+
+        final_text = "\n".join(corrected[i] for i in sorted(corrected))
+
+        crud.transactions.debit_from_wallet(
+            db, user=user,
+            cost=total_tokens * user.token_price,
+            description=f"هزینه اصلاح فایل متنی: {record.original_filename}"
+        )
+        record.ai_token_usage = total_tokens
+
+        crud.transcriptions.finalize_job(db, record, final_text, int(time.time() - start_time))
+
+    except Exception as e:
+        print(f"[Celery-Text] Record {record_id} failed: {e}")
+        db.rollback()
+        crud.transcriptions.update_transcription_status(db, record_id, "failed")
+        raise
+    finally:
+        db.commit()
+        db.close()
+
+
+
+# app/tasks/helpers.py
+# توابع کمکی مشترک برای پردازش‌ها
+from typing import Any
+from app.services.ai_services import correct_text_with_ai
+
+# تبدیل خروجی به متن تمیز
+def to_clean_string(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, list):
+        parts = []
+        for item in raw:
+            parts.append(str(item.get("text", item)) if isinstance(item, dict) else str(item))
+        return "\n".join(p for p in parts if p).strip()
+    return str(raw).strip()
+
+# اصلاح یک تکه متن توسط AI
+def correct_single_text_chunk(task_data: tuple[int, str, float]):
+    idx, chunk, price = task_data
+    corrected, used = correct_text_with_ai(chunk, price)
+    return idx, corrected, used
+
+
+# app/tasks/audio_tasks.py
+# وظایف Celery مربوط به پردازش فایل‌های صوتی
+import time
+from sqlalchemy.orm import Session
+from app.celery_app import celery_app
+from app.database import SessionLocal
+from app import models, crud
+from app.services.audio_processing import transcribe_audio_google
+from .helpers import to_clean_string
+from app.services.ai_services import correct_text_with_ai
+
+@celery_app.task(bind=True, name="audio_transcribe_task")
+def background_audio_task(self, record_id: int, file_path: str, language: str, process_ai: bool, original_filename: str):
+    db: Session = SessionLocal()
+    start_time = time.time()
+
+    try:
+        record = db.query(models.TranscriptionFile).get(record_id)
+        if not record or record.status == "canceled":
+            return
+
+        user = record.owner
+        if process_ai and user.wallet_balance < (200 * user.token_price):
+            raise ValueError("موجودی برای اصلاح با هوش مصنوعی کافی نیست.")
+
+        crud.transcriptions.update_transcription_status(db, record_id, "processing")
+
+        raw_segments = transcribe_audio_google(file_path, language)
+        raw_text_str = to_clean_string(raw_segments)
+        if not raw_text_str or "[خطا" in raw_text_str:
+            raise ValueError("پیاده‌سازی صوت ناموفق بود.")
+
+        record.raw_result_text = raw_text_str
+        final_text, token_usage = raw_text_str, 0
+
+        if process_ai:
+            corrected_text, token_usage = correct_text_with_ai(raw_text_str, user.token_price)
+            if "[خطا" in corrected_text:
+                raise ValueError("اصلاح با هوش مصنوعی ناموفق بود.")
+
+            final_text = corrected_text
+            record.ai_result_text = corrected_text
+            record.ai_token_usage = token_usage
+
+            crud.transactions.debit_from_wallet(
+                db, user=user,
+                cost=token_usage * user.token_price,
+                description=f"هزینه اصلاح فایل: {original_filename}"
+            )
+
+        crud.transcriptions.finalize_job(db, record, final_text, int(time.time() - start_time))
+
+    except Exception as e:
+        print(f"[Celery-Audio] Record {record_id} failed: {e}")
+        db.rollback()
+        crud.transcriptions.update_transcription_status(db, record_id, "failed")
+        raise
+    finally:
+        db.commit()
+        db.close()
+
+
+
+# app/tasks/external_tasks.py
+# پردازش وظایف از API خارجی
+import requests, shutil
+from pathlib import Path
+from sqlalchemy.orm import Session
+from app.celery_app import celery_app
+from app.database import SessionLocal
+from app import models
+from .audio_tasks import background_audio_task
+
+@celery_app.task(bind=True, name="external_job_task")
+def enqueue_external_job(self, job_id: int, file_url: str, language: str, mode: str, callback_url: str | None = None):
+    db: Session = SessionLocal()
+    try:
+        record = db.query(models.TranscriptionFile).get(job_id)
+        if not record:
+            raise ValueError("Job not found")
+
+        local_path = Path("uploads") / f"ext_{job_id}_{Path(file_url).name}"
+        with requests.get(file_url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                shutil.copyfileobj(r.raw, f)
+
+        background_audio_task.delay(job_id, str(local_path), language, mode != "transcribe_only", local_path.name)
+
+        # ارسال به callback_url (اختیاری)
+        # TODO: پیاده‌سازی webhook برای ارسال نتیجه
+
+    except Exception as e:
+        print(f"[Celery-External] Job {job_id} failed: {e}")
+        raise
+    finally:
+        db.close()
+
+
+# app/tasks/audio.py
+
+def parallel_audio_job(record_id: int, file_path: str, lang: str = "fa-IR"):
+    """
+    منطق اجرای پردازش موازی فایل صوتی
+    """
+    print(f"[parallel_audio_job] Processing record {record_id} with lang {lang}")
+    return {"status": "ok", "record_id": record_id}
+

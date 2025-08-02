@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}همهٔ فعالیت‌ها{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <h2>همهٔ فعالیت‌های کاربران</h2>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>نام کاربر</th><th>فایل</th><th>تاریخ</th><th>وضعیت</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in transcriptions %}
+      <tr>
+        <td>{{ loop.index + (current_page-1)*15 }}</td>
+        <td>{{ t.user.username }}</td>
+        <td>{{ t.filename }}</td>
+        <td>{{ t.created_at|jalali }}</td>
+        <td>{{ t.status }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="text-center">هیچ موردی یافت نشد.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% include "partials/pagination.html" %}
+</div>
+{% endblock %}

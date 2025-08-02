@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>فاکتور - {{ invoice_number }}</title>
+    <!-- فراخوانی فونت وزیرمتن -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
+    <style>
+        /* استایل‌های عمومی */
+        body {
+            background-color: #f8f9fa;
+            font-family: 'Vazirmatn', sans-serif;
+            color: #333;
+            line-height: 1.6;
+        }
+        /* کانتینر اصلی فاکتور */
+        .invoice-box {
+            max-width: 1100px; /* عرض بیشتر برای حالت افقی */
+            margin: 40px auto;
+            padding: 40px;
+            border: 1px solid #ddd;
+            box-shadow: 0 0 15px rgba(0, 0, 0, .05);
+            background-color: #fff;
+        }
+        /* جدول اصلی */
+        .invoice-box table {
+            width: 100%;
+            line-height: inherit;
+            text-align: right;
+            border-collapse: collapse;
+        }
+        .invoice-box table td {
+            padding: 8px 12px;
+            vertical-align: top;
+        }
+        /* بخش هدر فاکتور */
+        .header-table td {
+            padding-bottom: 20px;
+        }
+        .header-table .title {
+            font-size: 24px;
+            font-weight: bold;
+            color: #003366;
+        }
+        .header-table .invoice-details {
+            text-align: left;
+            direction: ltr;
+        }
+        /* بخش اطلاعات مشتری */
+        .information-table td {
+            padding-bottom: 30px;
+        }
+        /* سرستون‌های جدول اصلی */
+        .heading td {
+            background: #f2f2f2;
+            border-bottom: 2px solid #ddd;
+            font-weight: bold;
+            text-align: center;
+        }
+        .heading td:first-child {
+            text-align: right;
+        }
+        /* ردیف‌های آیتم‌ها */
+        .item td {
+            border-bottom: 1px solid #eee;
+            text-align: center;
+        }
+        .item td:first-child {
+            text-align: right;
+        }
+        /* بخش جمع کل */
+        .total td {
+            border-top: 2px solid #ddd;
+            font-weight: bold;
+            text-align: left;
+        }
+        /* بخش فوتر */
+        .footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+            text-align: center;
+            font-size: 14px;
+            color: #777;
+        }
+        /* استایل‌های مربوط به چاپ */
+        @media print {
+            body {
+                background-color: #fff;
+            }
+            .invoice-box {
+                box-shadow: none;
+                border: none;
+                margin: 0;
+                padding: 0;
+            }
+            .no-print {
+                display: none;
+            }
+            /* تنظیم صفحه برای چاپ افقی */
+            @page {
+                size: A4 landscape;
+                margin: 20mm;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="invoice-box">
+        <table cellpadding="0" cellspacing="0">
+            <!-- بخش هدر: لوگو و اطلاعات فاکتور -->
+            <tr class="top">
+                <td colspan="5">
+                    <table class="header-table">
+                        <tr>
+                            <td class="title">
+                                موسسه زمینه سازان بندگی متعالی
+                            </td>
+                            <td class="invoice-details">
+                                <strong>شماره فاکتور:</strong> {{ invoice_number }}<br>
+                                <strong>تاریخ صدور:</strong> {{ jdatetime.datetime.now().strftime('%Y/%m/%d') }}
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+            <!-- بخش اطلاعات مشتری -->
+            <tr class="information">
+                <td colspan="5">
+                    <table class="information-table">
+                        <tr>
+                            <td>
+                                <strong>صورتحساب برای:</strong><br>
+                                جناب آقای/سرکار خانم {{ user.username }}
+                            </td>
+                        </tr>
+                    </table>
+                </td>
+            </tr>
+            <!-- سرستون‌های جدول خدمات -->
+            <tr class="heading">
+                <td>شرح خدمات (عملیات و نام فایل)</td>
+                <td style="text-align:center;">زمان</td>
+                <td style="text-align:center;">تعداد توکن</td>
+                <td style="text-align:center;">نرخ توکن (ریال)</td>
+                <td style="text-align:left;">مبلغ نهایی (ریال)</td>
+            </tr>
+            <!-- آیتم‌های فاکتور -->
+            {% for job in jobs %}
+            <tr class="item">
+                <td>
+                    {% if '(AI)' in job.original_filename %} پیاده‌سازی و اصلاح فایل
+                    {% elif '(RAW)' in job.original_filename %} پیاده‌سازی خام فایل
+                    {% elif '(اصلاح متنی)' in job.original_filename %} اصلاح فایل متنی
+                    {% else %} عملیات نامشخص
+                    {% endif %}
+                    <br><small style="color: #555;">{{ job.original_filename.replace('(AI) ', '').replace('(RAW) ', '').replace('(اصلاح متنی) ', '') }}</small>
+                </td>
+                <td style="text-align:center;">{{ job.timestamp_local.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td style="text-align:center;">{{ "{:,.0f}".format(job.ai_token_usage or 0) }}</td>
+                <td style="text-align:center;">{% if job.ai_token_usage %}{{ "{:,.0f}".format(user.token_price) }}{% else %}-{% endif %}</td>
+                <td style="text-align:left;">{% if job.ai_token_usage %}{{ "{:,.0f}".format(job.ai_token_usage * user.token_price) }}{% else %}۰{% endif %}</td>
+            </tr>
+            {% endfor %}
+            <!-- بخش جمع کل -->
+            <tr class="total">
+                <td colspan="4" style="text-align:left; font-size: 18px;"><strong>جمع کل:</strong></td>
+                <td style="text-align:left; font-size: 18px;"><strong>{{ "{:,.0f}".format(total_cost) }} ریال</strong></td>
+            </tr>
+        </table>
+        <!-- فوتر فاکتور -->
+        <div class="footer">
+            <p>مشهد، خ شهید رحیمی، رحیمی۲۷، علیزاده ۴، ساختمان اوراسیا، طبقه اول</p>
+            <p>taalei-edu.ir</p>
+        </div>
+        <!-- دکمه‌های چاپ و بستن -->
+        <div style="text-align: center; margin-top: 50px;" class="no-print">
+            <button onclick="window.print()">چاپ فاکتور</button>
+            <a href="javascript:window.close()" style="margin-right: 15px; background-color: #6c757d; color: white; padding: 10px 15px; border-radius: 5px; text-decoration: none;">بستن</a>
+        </div>
+    </div>
+</body>
+</html>

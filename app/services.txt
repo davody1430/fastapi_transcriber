@@ -1,0 +1,213 @@
+ai_services.py
+import os
+from typing import Tuple
+import requests
+from tenacity import retry, stop_after_attempt, wait_exponential
+from app.core.config import settings
+
+class AIService:
+    def __init__(self):
+        self.api_key = os.getenv("GAPGPT_API_KEY")
+        self.base_url = settings.AI_API_URL
+        self.timeout = settings.AI_API_TIMEOUT
+
+    @retry(
+        stop=stop_after_attempt(settings.AI_MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True
+    )
+    def correct_text(self, text: str) -> Tuple[str, int]:
+        if not self._validate_api_key():
+            return f"[AI Service Unavailable] {text}", 0
+
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": settings.AI_MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": settings.AI_SYSTEM_PROMPT},
+                {"role": "user", "content": text}
+            ],
+            "temperature": settings.AI_TEMPERATURE
+        }
+
+        try:
+            response = requests.post(
+                self.base_url,
+                headers=headers,
+                json=payload,
+                timeout=self.timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            return (
+                data["choices"][0]["message"]["content"].strip(),
+                data["usage"]["total_tokens"]
+            )
+        except Exception as e:
+            print(f"AI API Error: {e}")
+            raise  # برای مدیریت توسط retry
+
+    def _validate_api_key(self) -> bool:
+        if not self.api_key or "YourActual" in self.api_key:
+            print("Invalid API Key Configuration")
+            return False
+        return True
+
+# تابع اصلی برای سازگاری با کد قدیمی
+def correct_text_with_ai(text: str, user_price: float = 0) -> Tuple[str, int]:
+    return AIService().correct_text(text)
+
+
+from __future__ import annotations
+import os
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
+import speech_recognition as sr
+from pydub import AudioSegment
+from app.core.config import settings
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+class AudioProcessor:
+    def __init__(self):
+        self.chunk_sec = settings.AUDIO_CHUNK_SIZE  # ثانیه
+        self.default_lang = settings.DEFAULT_AUDIO_LANG
+        self.recognizer = sr.Recognizer()
+        self.temp_files: List[Path] = []
+
+    def __del__(self):
+        """پاکسازی خودکار فایل‌های موقت هنگام تخریب شیء"""
+        self.cleanup()
+
+    def cleanup(self):
+        """حذف فایل‌های موقت"""
+        for file in self.temp_files:
+            try:
+                if file.exists():
+                    file.unlink()
+            except Exception as e:
+                print(f"Error deleting temp file {file}: {e}")
+
+    @staticmethod
+    def split_audio(file_path: Path) -> List[Path]:
+        """تقسیم فایل صوتی به قطعات کوچکتر"""
+        audio = AudioSegment.from_file(file_path)
+        chunk_length_ms = 50 * 1000  # 50 ثانیه
+        chunks = []
+    
+        for i, start in enumerate(range(0, len(audio), chunk_length_ms)):
+            end = start + chunk_length_ms
+            chunk = audio[start:end]
+            chunk_path = file_path.with_suffix(f".part{i}.wav")
+            chunk.export(chunk_path, format="wav")
+            chunks.append(chunk_path)
+    
+        return chunks
+
+    @retry(
+        stop=stop_after_attempt(settings.AUDIO_MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        reraise=True
+    )
+    def _transcribe_chunk(self, chunk_path: Path, language: str) -> str:
+        """تبدیل یک قطعه صوتی به متن"""
+        with sr.AudioFile(str(chunk_path)) as src:
+            audio_data = self.recognizer.record(src)
+            return self.recognizer.recognize_google(audio_data, language=language)
+
+    def transcribe_audio(
+        self,
+        file_path: str | Path,
+        language: Optional[str] = None,
+    ) -> List[Dict]:
+        """تبدیل فایل صوتی به متن"""
+        file_path = Path(file_path).expanduser().resolve()
+        segments: List[Dict] = []
+        language = language or self.default_lang
+
+        try:
+            parts = self.split_audio(file_path)
+            
+            for idx, part_path in enumerate(parts):
+                start_sec = idx * self.chunk_sec
+                end_sec = start_sec + self.chunk_sec
+                transcript = ""
+
+                try:
+                    transcript = self._transcribe_chunk(part_path, language)
+                except sr.UnknownValueError:
+                    transcript = f"({self.sec_to_mmss(start_sec)}-{self.sec_to_mmss(end_sec)})"
+                except sr.RequestError as e:
+                    print(f"API Error for chunk {idx}: {e}")
+                    raise
+
+                segments.append({
+                    "start": start_sec,
+                    "end": end_sec,
+                    "text": transcript
+                })
+
+            return segments
+        finally:
+            self.cleanup()
+
+    @staticmethod
+    def sec_to_mmss(seconds: int) -> str:
+        """تبدیل ثانیه به فرمت MM:SS"""
+        minutes, seconds = divmod(seconds, 60)
+        return f"{minutes:02d}:{seconds:02d}"
+
+# سازگاری با کد قدیمی
+def transcribe_audio_google(*args, **kwargs):
+    return AudioProcessor().transcribe_audio(*args, **kwargs)
+
+# توابع با نام قدیمی برای سازگاری
+_split_audio = AudioProcessor.split_audio
+_sec_to_mmss = AudioProcessor.sec_to_mmss
+
+
+
+# app/services/text_processing.py
+
+import docx
+
+def extract_text_from_docx(file_path: str) -> str:
+    """متن را از یک فایل .docx استخراج می‌کند."""
+    try:
+        document = docx.Document(file_path)
+        return "\n".join([para.text for para in document.paragraphs])
+    except Exception as e:
+        print(f"Error reading docx file {file_path}: {e}")
+        return ""
+
+def split_text_into_chunks(text: str, chunk_size: int = 2500):
+    """یک متن طولانی را به قطعات کوچکتر با اندازه مشخص تقسیم می‌کند."""
+    for i in range(0, len(text), chunk_size):
+        yield text[i:i + chunk_size]
+
+
+webhook.py
+import json, time, hmac, hashlib, requests
+
+
+def post_with_signature(url: str, payload: dict, secret: str, timeout=10):
+    """
+    یک امضای ساده HMAC-SHA256 روی body می‌زند تا مشتری صحت پیام را تأیید کند.
+    """
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    signature = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    headers = {
+        "Content-Type": "application/json; charset=utf-8",
+        "X-Signature": signature,
+        "User-Agent": "fastapi-transcriber-webhook/1.0",
+    }
+    try:
+        requests.post(url, data=body, headers=headers, timeout=timeout)
+    except Exception as e:
+        # فقط لاگ بکنید تا کار اصلی خراب نشود
+        print(f"Webhook POST error ⇒ {e}")

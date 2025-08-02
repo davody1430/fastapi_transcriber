@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}پیاده‌سازی شخصی مدیر{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 20px;">
+    <a href="/dashboard"> &larr; بازگشت به داشبورد اصلی مدیر</a>
+</div>
+<div class="panel">
+    <p>فایلی که میخواهید پیاده یا اصلاح شود را انتخاب و ارسال کنید.</p>
+</div>
+
+<div class="tabs" style="margin-top: 40px;">
+    <button class="tab-button" onclick="openTab(event, 'audio-transcribe')">پیاده‌سازی صوت</button>
+    <button class="tab-button" onclick="openTab(event, 'text-correct')">اصلاح متن</button>
+</div>
+
+<div id="audio-transcribe" class="tab-content">
+    <div class="panel">
+        <h2>بارگذاری فایل صوتی/تصویری</h2>
+        <form id="transcribe-form" action="/transcribe/" method="post" enctype="multipart/form-data">
+            <button type="button" onclick="document.getElementById('audio-file-input-admin').click()" style="background-color: #6c757d;">انتخاب فایل</button>
+            <span id="audio-file-name-admin" style="text-align: center; padding: 5px; color: #555;">هنوز فایلی انتخاب نشده است.</span>
+            <input type="file" id="audio-file-input-admin" name="files" required multiple accept="audio/*,video/*" style="display:none;">
+            <label>زبان:</label>
+            <select name="language">
+                <option value="fa-IR">فارسی</option>
+                <option value="en-US">انگلیسی</option>
+                <option value="ar-SA">عربی</option>
+            </select>
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <input type="checkbox" id="use_ai_correction_audio_admin" name="use_ai_correction" value="true" style="width: auto; height: auto;">
+                <label for="use_ai_correction_audio_admin">اصلاح خروجی با هوش مصنوعی</label>
+            </div>
+            <button id="submit-btn-audio" type="submit">ارسال برای پیاده‌سازی</button>
+        </form>
+    </div>
+</div>
+
+<div id="text-correct" class="tab-content">
+    <div class="panel">
+        <h2>بارگذاری فایل متنی برای اصلاح</h2>
+        <form id="text-correct-form" action="/correct-text/" method="post" enctype="multipart/form-data">
+            <button type="button" onclick="document.getElementById('text-file-input-admin').click()" style="background-color: #6c757d;">انتخاب فایل</button>
+            <span id="text-file-name-admin" style="text-align: center; padding: 5px; color: #555;">هنوز فایلی انتخاب نشده است.</span>
+            <input type="file" id="text-file-input-admin" name="files" required multiple accept=".txt,.docx" style="display:none;">
+            <button id="submit-btn-text" type="submit">ارسال برای اصلاح</button>
+        </form>
+    </div>
+</div>
+
+<div class="panel" style="margin-top: 40px;">
+    <h2>تاریخچه فعالیت‌های شما (مدیر)</h2>
+    <form action="/invoice" method="post" target="_blank">
+        {% if transcriptions %}
+            <table>
+                <thead>
+                    <tr>
+                        <th><input type="checkbox" onclick="toggleAll(this, 'admin_jobs')"></th>
+                        <th>فایل</th>
+                        <th>نوع درخواست</th>
+                        <th>زمان درخواست</th>
+                        <th>وضعیت</th>
+                        <th>مدت عملیات</th>
+                        <th>حجم مصرف توکن (AI)</th>
+                        <th>عملیات</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for file in transcriptions %}
+                    <tr>
+                        <td><input type="checkbox" name="job_ids" value="{{ file.id }}" class="job-checkbox-admin"></td>
+                        <td>{{ file.original_filename.replace('(AI) ', '').replace('(RAW) ', '').replace('(اصلاح متنی) ', '') }}</td>
+                        <td>
+                            {% if '(AI)' in file.original_filename %} پیاده‌سازی و اصلاح
+                            {% elif '(RAW)' in file.original_filename %} پیاده‌سازی خام
+                            {% elif '(اصلاح متنی)' in file.original_filename %} اصلاح متن
+                            {% else %} نامشخص
+                            {% endif %}
+                        </td>
+                        <td>{{ file.timestamp_local.strftime('%Y-%m-%d %H:%M') }}</td>
+                        <td>
+                            {% if file.status == 'completed' %} <span style="color: green;">تکمیل شد</span>
+                            {% elif file.status == 'failed' %} <span style="color: red;">ناموفق</span>
+                            {% elif file.status == 'canceled' %} <span style="color: grey;">لغو شده</span>
+                            {% else %} <span style="color: orange;">در حال پردازش...</span>
+                            {% endif %}
+                        </td>
+                        <td>{% if file.processing_duration_seconds %}{{ file.processing_duration_seconds }} ثانیه{% else %}-{% endif %}</td>
+                        <td>{% if file.ai_token_usage %}{{ file.ai_token_usage }}{% else %}-{% endif %}</td>
+                        <td>
+                            {% if file.status == 'completed' %}
+                                <a href="/download/{{ file.id }}/txt">دانلود TXT</a>
+                                <a href="/download/{{ file.id }}/docx" style="margin-right: 10px;">دانلود DOCX</a>
+                            {% elif file.status in ['pending', 'processing'] %}
+                                <button type="submit" class="cancel-btn" formaction="/transcribe/{{ file.id }}/cancel" formmethod="post" formtarget="_self">لغو</button>
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            <div style="display:flex; justify-content: space-between; align-items: center; margin-top: 20px;">
+                <button type="submit" style="width: auto;">صدور فاکتور برای موارد انتخاب شده</button>
+                <div class="pagination">
+                    {% if total_pages > 1 %}
+                        <a href="/admin/transcribe?page={{ current_page - 1 }}" class="{% if current_page <= 1 %}disabled{% endif %}">قبلی</a>
+                        <span class="current">صفحه {{ current_page }} از {{ total_pages }}</span>
+                        <a href="/admin/transcribe?page={{ current_page + 1 }}" class="{% if current_page >= total_pages %}disabled{% endif %}">بعدی</a>
+                    {% endif %}
+                </div>
+            </div>
+        {% else %}
+            <p>تاریخچه‌ای برای نمایش وجود ندارد.</p>
+        {% endif %}
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function showToast(message, isError = false) {
+        Toastify({ text: message, duration: 8000, gravity: "bottom", position: "center", backgroundColor: isError ? "#dc3545" : "#4CAF50" }).showToast();
+    }
+    function openTab(evt, tabName) {
+        var i, tabcontent, tablinks;
+        tabcontent = document.getElementsByClassName("tab-content");
+        for (i = 0; i < tabcontent.length; i++) { tabcontent[i].style.display = "none"; }
+        tablinks = document.getElementsByClassName("tab-button");
+        for (i = 0; i < tablinks.length; i++) { tablinks[i].className = tablinks[i].className.replace(" active", ""); }
+        document.getElementById(tabName).style.display = "block";
+        if (evt) evt.currentTarget.className += " active";
+    }
+    function toggleAll(source, className) {
+        var checkboxes = document.getElementsByClassName(className);
+        for(var i=0, n=checkboxes.length; i<n; i++) { checkboxes[i].checked = source.checked; }
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+        document.querySelector('.tab-button').click();
+        document.getElementById('audio-file-input-admin').addEventListener('change', function() {
+            document.getElementById('audio-file-name-admin').textContent = this.files.length > 0 ? `${this.files.length} فایل صوتی/تصویری انتخاب شد` : 'هنوز فایلی انتخاب نشده است.';
+        });
+        document.getElementById('text-file-input-admin').addEventListener('change', function() {
+            document.getElementById('text-file-name-admin').textContent = this.files.length > 0 ? `${this.files.length} فایل متنی انتخاب شد` : 'هنوز فایلی انتخاب نشده است.';
+        });
+        document.getElementById('transcribe-form').addEventListener('submit', () => {
+            document.getElementById('submit-btn-audio').disabled = true;
+            document.getElementById('submit-btn-audio').textContent = 'در حال ارسال...';
+        });
+        document.getElementById('text-correct-form').addEventListener('submit', () => {
+            document.getElementById('submit-btn-text').disabled = true;
+            document.getElementById('submit-btn-text').textContent = 'در حال ارسال...';
+        });
+        const params = new URLSearchParams(window.location.search);
+        const msgCode = params.get('msg');
+        const errCode = params.get('err');
+        if (msgCode) {
+            const messages = {
+                'transcribe-queued': 'درخواست پیاده‌سازی ثبت شد.',
+                'text-correction-queued': 'درخواست اصلاح متن ثبت شد.',
+                'transcribe-canceled': 'فرآیند لغو شد.'
+            };
+            if(messages[msgCode]) showToast(messages[msgCode]);
+            window.history.replaceState({}, document.title, '/admin/transcribe');
+        }
+        if (errCode) {
+            const errors = {
+                'insufficient-funds': 'موجودی کیف پول شما برای انجام این عملیات کافی نیست.',
+                'no-items-selected': 'لطفاً حداقل یک مورد را برای صدور فاکتور انتخاب کنید.'
+            };
+            if(errors[errCode]) showToast(errors[errCode], true);
+            window.history.replaceState({}, document.title, '/admin/transcribe');
+        }
+        if(document.querySelector("span[style*='orange']")) {
+            setTimeout(() => { window.location.href = '/admin/transcribe'; }, 15000);
+        }
+    });
+</script>
+{% endblock %}

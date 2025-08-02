@@ -1,0 +1,26 @@
+<!-- ======= تراکنش‌ها ======= -->
+<h2 class="text-center mb-1">تراکنش‌ها</h2>
+
+<form method="get" action="/admin/all-transactions" style="display:flex;gap:5px;margin-bottom:10px">
+  <input type="text" name="transaction_search" placeholder="جستجوی نام کاربری…" value="{{ transaction_search or '' }}" style="flex-grow:1">
+  <button type="submit" style="width:auto">جستجو</button>
+</form>
+
+<table data-datatables>
+  <thead>
+    <tr><th>#</th><th>کاربر</th><th>تاریخ</th><th>شرح</th><th>مبلغ (ریال)</th></tr>
+  </thead>
+  <tbody>
+  {% for t in transactions %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ t.user.username }}</td>
+      <td>{{ t.timestamp_shamsi.strftime('%Y/%m/%d %H:%M') }}</td>
+      <td>{{ t.description }}</td>
+      <td style="color:{% if t.amount<0 %}red{% else %}green{% endif %};font-weight:bold;direction:ltr">
+        {{ "{:,.0f}".format(t.amount) }}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>

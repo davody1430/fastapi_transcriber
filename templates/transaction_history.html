@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}تاریخچه تراکنش‌ها{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h1>تاریخچه تراکنش‌های شما</h1>
+        <a href="/dashboard" style="font-weight: bold; text-decoration: none;">&larr; بازگشت به داشبورد</a>
+    </div>
+    <h2 style="text-align: center; border-bottom: none;">موجودی فعلی: {{ "{:,.0f}".format(user.wallet_balance) }} ریال</h2>
+    
+    {% if transactions %}
+        <table>
+            <thead>
+                <tr>
+                    <th>زمان تراکنش (شمسی)</th>
+                    <th>شرح</th>
+                    <th>قیمت توکن (در زمان تراکنش)</th>
+                    <th>مبلغ (ریال)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for trans in transactions %}
+                <tr>
+                    <td>{{ trans.timestamp_shamsi.strftime('%Y/%m/%d %H:%M:%S') }}</td>
+                    <td>{{ trans.description }}</td>
+                    <td style="text-align: center;">{% if trans.token_price_at_transaction %}{{ "{:,.0f}".format(trans.token_price_at_transaction) }}{% else %}-{% endif %}</td>
+                    <td style="color: {% if trans.amount < 0 %}red{% else %}green{% endif %}; font-weight: bold; direction: ltr;">
+                        {{ "{:,.0f}".format(trans.amount) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        <div class="pagination">
+            {% if total_pages > 1 %}
+                <a href="?page={{ current_page - 1 }}" class="{% if current_page <= 1 %}disabled{% endif %}">قبلی</a>
+                <span class="current">صفحه {{ current_page }} از {{ total_pages }}</span>
+                <a href="?page={{ current_page + 1 }}" class="{% if current_page >= total_pages %}disabled{% endif %}">بعدی</a>
+            {% endif %}
+        </div>
+    {% else %}
+        <p style="text-align: center; margin-top: 30px;">هیچ تراکنشی برای نمایش وجود ندارد.</p>
+    {% endif %}
+</div>
+{% endblock %}

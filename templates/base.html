@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}دستیار صوت و متن{% endblock %}</title>
+    
+    <!-- فراخوانی فونت وزیرمتن -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
+    
+    <!-- لینک به فایل استایل مشترک -->
+    <link rel="stylesheet" href="/static/style.css">
+    
+    <!-- لینک به کتابخانه اعلان‌ها -->
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    
+    <!-- لینک به کتابخانه‌های DataTables برای جداول پیشرفته -->
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/2.0.8/css/dataTables.dataTables.min.css">
+    <link rel="stylesheet" type="text/css" href="https://cdn.datatables.net/buttons/3.0.2/css/buttons.dataTables.min.css">
+
+</head>
+<body>
+    <!-- فراخوانی هدر از فایل مجزا -->
+    {% include 'header.html' %}
+
+    <!-- بلوک محتوای اصلی که هر صفحه آن را با محتوay خود پر می‌کند -->
+    <main class="main-container">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- فراخوانی فوتر از فایل مجزا -->
+    {% include 'footer.html' %}
+
+    <!-- کتابخانه‌های جاوا اسکریپت -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.datatables.net/2.0.8/js/dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/3.0.2/js/dataTables.buttons.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdn.datatables.net/buttons/3.0.2/js/buttons.html5.min.js"></script>
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+
+    <!-- اسکریپت مدیریت تم لایت/دارک -->
+    <script>
+        const themeToggle = document.getElementById('theme-checkbox');
+        const currentTheme = localStorage.getItem('theme');
+
+        if (currentTheme) {
+            document.documentElement.setAttribute('data-theme', currentTheme);
+            if (currentTheme === 'dark') {
+                themeToggle.checked = true;
+            }
+        }
+
+        themeToggle.addEventListener('change', function() {
+            if (this.checked) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+                localStorage.setItem('theme', 'dark');
+            } else {
+                document.documentElement.setAttribute('data-theme', 'light');
+                localStorage.setItem('theme', 'light');
+            }
+        });
+    </script>
+    
+    <!-- بلوک اسکریپت‌های اختصاصی هر صفحه -->
+    {% block scripts %}{% endblock %}
+
+</body>
+</html>

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}تراکنش‌های کاربر: {{ user_to_edit.username }}{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 20px;">
+    <a href="/admin/manage-users"> &larr; بازگشت به لیست کاربران</a>
+</div>
+<div class="panel">
+    <h1>مدیریت کاربر: {{ user_to_edit.username }}</h1>
+    <div class="tabs">
+        <a href="/admin/users/{{ user_to_edit.id }}/profile" class="tab-button">پروفایل کاربر</a>
+        <a href="/admin/users/{{ user_to_edit.id }}/transactions" class="tab-button active">تراکنش‌های مالی</a>
+        <a href="/admin/users/{{ user_to_edit.id }}/transcriptions" class="tab-button">تاریخچه پیاده‌سازی</a>
+    </div>
+    <div class="tab-content active" style="padding-top: 20px;">
+        <div class="panel-container">
+            <div class="panel half-width">
+                <h2>افزایش/کاهش اعتبار</h2>
+                <p>موجودی فعلی: <strong>{{ "{:,.0f}".format(user_to_edit.wallet_balance) }} ریال</strong></p>
+                <form action="/admin/users/{{ user_to_edit.id }}/adjust_balance" method="post">
+                    <label>مبلغ (برای کاهش از عدد منفی استفاده کنید):</label><input type="number" step="any" name="amount" required>
+                    <label>دلیل تراکنش:</label>
+                    <select name="description">
+                        <option value="واریز کاربر">واریز کاربر</option>
+                        <option value="برگشت وجه">برگشت وجه</option>
+                        <option value="اعتبار هدیه">اعتبار هدیه</option>
+                    </select>
+                    <button type="submit">اعمال تراکنش</button>
+                </form>
+            </div>
+            <div class="panel half-width">
+                <h2>تاریخچه تراکنش‌ها</h2>
+                <!-- Transaction table goes here -->
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

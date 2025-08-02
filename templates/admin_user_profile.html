@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}پروفایل کاربر: {{ user_to_edit.username }}{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 20px;">
+    <a href="/admin/manage-users"> &larr; بازگشت به لیست کاربران</a>
+</div>
+<div class="panel">
+    <h1>مدیریت کاربر: {{ user_to_edit.username }}</h1>
+    <div class="tabs">
+        <a href="/admin/users/{{ user_to_edit.id }}/profile" class="tab-button active">پروفایل کاربر</a>
+        <a href="/admin/users/{{ user_to_edit.id }}/transactions" class="tab-button">تراکنش‌های مالی</a>
+        <a href="/admin/users/{{ user_to_edit.id }}/transcriptions" class="tab-button">تاریخچه پیاده‌سازی</a>
+    </div>
+    <div class="tab-content active" style="padding-top: 20px;">
+        <h2>مشخصات کاربر</h2>
+        {% if error %}
+            <div style="background-color: #f8d7da; color: #721c24; padding: 1rem; border-radius: .25rem; margin-bottom: 1rem;">{{ error }}</div>
+        {% endif %}
+        <form action="/admin/users/{{ user_to_edit.id }}/profile" method="post">
+            <label>نام کاربری:</label><input type="text" name="username" value="{{ user_to_edit.username }}" required>
+            <label>محدودیت روزانه:</label><input type="number" name="file_limit" value="{{ user_to_edit.file_limit }}" required>
+            <label>قیمت هر توکن (ریال):</label><input type="number" step="any" name="token_price" value="{{ user_to_edit.token_price }}" required>
+            <hr style="margin: 20px 0;">
+            <label>رمز عبور جدید (برای تغییر، کادر را پر کنید):</label><input type="password" name="new_password" minlength="6" placeholder="اختیاری">
+            <button type="submit">ذخیره مشخصات</button>
+        </form>
+    </div>
+    <hr>
+<h3>دسترسی API</h3>
+
+{% if api_key %}
+    <p><strong>کلید فعلی:</strong></p>
+    <pre id="api-key-box" style="background:#f8f8f8;padding:10px;border:1px solid #ccc;direction:ltr">{{ api_key.key }}</pre>
+<button class="btn btn-outline" onclick="copyApiKey()" style="margin-top: 10px;">کپی</button>
+<span id="copy-success" style="color: green; display: none; margin-right: 10px;">کپی شد!</span>
+
+    <form action="/admin/users/{{ user_to_edit.id }}/deactivate-api-key" method="post">
+        <button class="btn btn-outline" style="margin-top:10px">غیرفعال‌سازی کلید</button>
+    </form>
+{% else %}
+    <p>این کاربر هنوز کلید API ندارد.</p>
+    <form action="/admin/users/{{ user_to_edit.id }}/create-api-key" method="post">
+        <button class="btn" style="margin-top:10px">ایجاد API Key</button>
+    </form>
+    <pre id="api-key-box" style="background:#f8f8f8;padding:10px;border:1px solid #ccc;direction:ltr">
+    {{ api_key.key }}
+
+{% endif %}
+
+</div>
+{% endblock %}

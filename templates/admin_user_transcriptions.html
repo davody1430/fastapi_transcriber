@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% set active_tab = 'transcriptions' %}
+
+{% block title %}تاریخچه پیاده‌سازی: {{ user_to_edit.username }}{% endblock %}
+
+{% block content %}
+<h2>تاریخچه فعالیت‌های کاربر</h2>
+
+{% if transcriptions %}
+    <table id="history-table">
+        <thead>
+            <tr>
+                <th>فایل</th>
+                <th>نوع درخواست</th>
+                <th>زمان درخواست</th>
+                <th>وضعیت</th>
+                <th>مدت عملیات</th>
+                <th>توکن (AI)</th>
+                <th>عملیات</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for file in transcriptions %}
+            <tr>
+                <td>{{ file.original_filename.replace('(AI) ', '').replace('(RAW) ', '').replace('(اصلاح متنی) ', '') }}</td>
+                <td>
+                    {% if '(AI)' in file.original_filename %} پیاده‌سازی و اصلاح
+                    {% elif '(RAW)' in file.original_filename %} پیاده‌سازی خام
+                    {% elif '(اصلاح متنی)' in file.original_filename %} اصلاح متن
+                    {% else %} نامشخص
+                    {% endif %}
+                </td>
+                <td>{{ file.timestamp_local.strftime('%Y-%m-%d %H:%M') }}</td>
+                <td>
+                    {% if file.status == 'completed' %} <span style="color: green;">تکمیل شد</span>
+                    {% elif file.status == 'failed' %} <span style="color: red;">ناموفق</span>
+                    {% elif file.status == 'canceled' %} <span style="color: grey;">لغو شده</span>
+                    {% else %} <span style="color: orange;">در حال پردازش...</span>
+                    {% endif %}
+                </td>
+                <td>{% if file.processing_duration_seconds %}{{ file.processing_duration_seconds }} ثانیه{% else %}-{% endif %}</td>
+                <td>{% if file.ai_token_usage %}{{ file.ai_token_usage }}{% else %}-{% endif %}</td>
+                <td>
+                    {% if file.status == 'completed' %}
+                        <!-- مدیر فقط به فایل‌های کارمندان و مدیران دیگر دسترسی دارد -->
+                        {% if file.owner.role.name != 'customer' %}
+                            <a href="/download/{{ file.id }}/txt">دانلود TXT</a>
+                            <a href="/download/{{ file.id }}/docx" style="margin-right: 10px;">دانلود DOCX</a>
+                        {% else %}
+                            <span style="color: grey; font-style: italic;">(دسترسی محدود)</span>
+                        {% endif %}
+                    {% elif file.status in ['pending', 'processing'] %}
+                        <form action="/transcribe/{{ file.id }}/cancel" method="post" style="margin:0;">
+                            <button type="submit" class="cancel-btn">لغو</button>
+                        </form>
+                    {% else %}
+                        -
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <div class="pagination">
+        {% if total_pages > 1 %}
+            <a href="?page={{ current_page - 1 }}" class="{% if current_page <= 1 %}disabled{% endif %}">قبلی</a>
+            <span class="current">صفحه {{ current_page }} از {{ total_pages }}</span>
+            <a href="?page={{ current_page + 1 }}" class="{% if current_page >= total_pages %}disabled{% endif %}">بعدی</a>
+        {% endif %}
+    </div>
+{% else %}
+    <p>این کاربر هیچ فعالیتی ثبت نکرده است.</p>
+{% endif %}
+{% endblock %}

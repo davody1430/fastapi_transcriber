@@ -1,0 +1,451 @@
+dependencies.py
+# -*- coding: utf-8 -*-
+"""
+توابع کمکی/وابستگی‌های عمومی FastAPI
+"""
+from fastapi import Request, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+from jose import JWTError, jwt
+from . import crud, models, auth, database
+
+# برای API-های صرفاً JSON
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# --------------------------------------------------
+#  اتصال به دیتابیس (یک Session برای هر درخواست)
+# --------------------------------------------------
+def get_db():
+    db = database.SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# --------------------------------------------------
+#  استخراج کاربر از «کوکی» (برای صفحات وب)
+# --------------------------------------------------
+async def get_current_user_from_cookie(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    token_cookie: str | None = request.cookies.get("access_token")
+
+    cred_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+    )
+
+    if not token_cookie:
+        raise cred_exc
+
+    try:
+        token_value = token_cookie.split(" ")[1]
+        payload = jwt.decode(token_value, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username: str | None = payload.get("sub")
+        if username is None:
+            raise cred_exc
+    except (JWTError, IndexError):
+        raise cred_exc
+
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise cred_exc
+    return user
+
+# --------------------------------------------------
+#  استخراج کاربر از «هدر Authorization» (برای API)
+# --------------------------------------------------
+async def get_current_user_from_header(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    cred_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+    )
+
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username: str | None = payload.get("sub")
+        if username is None:
+            raise cred_exc
+    except JWTError:
+        raise cred_exc
+
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise cred_exc
+    return user
+
+# --------------------------------------------------
+#  بازرسی نقش‌ها
+# --------------------------------------------------
+async def get_current_admin(
+    current_user: models.User = Depends(get_current_user_from_cookie),
+):
+    if current_user.role != models.Role.admin:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_user
+
+async def get_current_employee_or_admin(
+    current_user: models.User = Depends(get_current_user_from_cookie),
+):
+    if current_user.role not in (models.Role.employee, models.Role.admin):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_user
+
+# --------------------------------------------------
+#  بررسی مدیر فعال (سازگاری با نام قدیمی)
+# --------------------------------------------------
+async def get_current_active_admin(
+    current_user: models.User = Depends(get_current_admin),
+):
+    return current_user
+
+
+main.py
+import logging
+from pathlib import Path
+from dotenv import load_dotenv
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from app.database import engine
+from app import models
+from app.routers import (
+    auth   as auth_router,
+    jobs   as jobs_router,
+    user   as user_router,
+    admin  as admin_router,
+)
+from app.templating import templates
+from app.core.config import settings
+from app.core.logger import setup_logging
+
+# راه‌اندازی لاگ‌گیری
+setup_logging()
+logger = logging.getLogger(__name__)
+
+# بارگذاری تنظیمات محیطی
+load_dotenv()
+
+# تنظیم مسیرها
+BASE_DIR = Path(__file__).resolve().parent.parent
+STATIC_DIR = BASE_DIR / settings.STATIC_DIR
+UPLOADS_DIR = BASE_DIR / settings.UPLOAD_DIR
+
+# ایجاد جداول پایگاه‌داده
+models.Base.metadata.create_all(bind=engine)
+
+# تعریف دسته‌های مستندات OpenAPI
+api_tags_metadata = [
+    {
+        "name": "🔐 احراز هویت",
+        "description": "ورود، خروج و مدیریت توکن کاربران.",
+    },
+    {
+        "name": "📥 فایل‌ها",
+        "description": "آپلود، پیاده‌سازی و اصلاح فایل‌های صوتی یا متنی.",
+    },
+    {
+        "name": "👤 کاربران",
+        "description": "مشاهده، ایجاد و ویرایش اطلاعات کاربران توسط ادمین.",
+    },
+    {
+        "name": "💰 کیف پول",
+        "description": "مشاهده و مدیریت تراکنش‌های مالی کاربران.",
+    },
+    {
+        "name": "⚙️ تنظیمات محتوا",
+        "description": "مدیریت محتوای صفحات درباره ما، قوانین، پرسش‌ها و تعرفه‌ها.",
+    },
+]
+
+# ایجاد برنامه اصلی FastAPI
+app = FastAPI(
+    title="دستیار صوت و متن",
+    description="پیاده‌سازی و اصلاح صوت/متن با FastAPI",
+    version="5.2.1",
+    docs_url="/swagger",
+    redoc_url=None,
+    openapi_tags=api_tags_metadata
+)
+
+# اتصال پوشه‌های استاتیک و فایل‌های آپلود
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
+@app.on_event("startup")
+async def startup_event():
+    """عملیات راه‌اندازی برنامه"""
+    logger.info("Application starting up...")
+    # ایجاد دایرکتوری‌های مورد نیاز
+    for d in [UPLOADS_DIR, STATIC_DIR]:
+        d.mkdir(parents=True, exist_ok=True)
+    logger.info("Application startup completed")
+
+# ------------------- روت‌های عمومی -------------------
+@app.get("/", response_class=HTMLResponse, tags=["🔐 احراز هویت"])
+async def read_root(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request, "user": None})
+
+@app.get("/terms", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def terms_page(request: Request):
+    return templates.TemplateResponse("terms.html", {"request": request})
+
+@app.get("/about", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def about_page(request: Request):
+    return templates.TemplateResponse("about.html", {"request": request})
+
+@app.get("/faq", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def faq_page(request: Request):
+    return templates.TemplateResponse("faq.html", {"request": request})
+
+@app.get("/pricing", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def pricing_page(request: Request):
+    return templates.TemplateResponse("pricing.html", {"request": request})
+
+@app.get("/change-password", response_class=HTMLResponse, tags=["🔐 احراز هویت"])
+async def change_password_page(request: Request):
+    return templates.TemplateResponse("change_password.html", {"request": request})
+
+@app.get("/api-docs", response_class=HTMLResponse)
+def api_docs_page(request: Request):
+    return templates.TemplateResponse("api_docs.html", {"request": request})
+
+# ------------------- اتصال روت‌های داخلی -------------------
+app.include_router(auth_router.router, tags=["🔐 احراز هویت"])
+app.include_router(jobs_router.router, tags=["📥 فایل‌ها"])
+app.include_router(user_router.router, tags=["👤 کاربران"])
+app.include_router(admin_router.router, tags=["👤 کاربران", "💰 کیف پول", "⚙️ تنظیمات محتوا"])
+
+
+
+schemas.py
+from datetime import datetime
+from enum import Enum
+from typing import List, Optional
+from pydantic import BaseModel, Field, HttpUrl
+from .models import Role
+
+class Token(BaseModel):
+    """Schema for JWT tokens"""
+    access_token: str = Field(..., description="JWT access token")
+    token_type: str = Field("bearer", description="Token type")
+
+class TokenData(BaseModel):
+    """Data structure for decoded token content"""
+    username: Optional[str] = Field(None, description="User identifier")
+
+class UserBase(BaseModel):
+    """Base user schema"""
+    username: str = Field(..., min_length=3, max_length=50, 
+                         description="Unique username")
+
+class UserCreate(UserBase):
+    """Schema for user creation"""
+    password: str = Field(..., min_length=6, description="Raw password")
+    role: Role = Field(Role.customer, description="User role")
+    file_limit: int = Field(5, ge=1, description="Daily file limit")
+    wallet_balance: float = Field(0.0, description="Initial balance")
+    token_price: float = Field(10.0, gt=0, description="Price per token")
+
+class UserUpdate(BaseModel):
+    """Schema for updating user details"""
+    username: Optional[str] = Field(None, min_length=3, max_length=50)
+    file_limit: Optional[int] = Field(None, ge=1)
+    token_price: Optional[float] = Field(None, gt=0)
+    is_active: Optional[bool] = Field(None)
+
+class User(UserBase):
+    """Complete user schema"""
+    id: int
+    role: Role
+    file_limit: int
+    wallet_balance: float
+    token_price: float
+    is_active: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id": 1,
+                "username": "admin",
+                "role": "admin",
+                "file_limit": 100,
+                "wallet_balance": 1000.0,
+                "token_price": 10.0,
+                "is_active": True,
+                "created_at": "2023-01-01T00:00:00"
+            }
+        }
+
+class PasswordChange(BaseModel):
+    """Schema for password change requests"""
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=6, description="New password")
+
+class TranscriptionFileBase(BaseModel):
+    """Base schema for transcription records"""
+    original_filename: str = Field(..., description="Original uploaded filename")
+    display_filename: str = Field(..., description="Display name in dashboard")
+    language: str = Field("fa-IR", description="Language code")
+
+class TranscriptionFileCreate(TranscriptionFileBase):
+    """Schema for creating new transcription records"""
+    pass
+
+class TranscriptionFile(TranscriptionFileBase):
+    """Complete transcription record schema"""
+    id: int
+    user_id: int
+    timestamp: datetime
+    timestamp_local: datetime
+    status: str = Field(..., description="Processing status")
+    celery_task_id: Optional[str] = Field(None, description="Celery task ID")
+    raw_result_text: Optional[str] = Field(None, description="Raw transcription")
+    ai_result_text: Optional[str] = Field(None, description="AI corrected text")
+    final_result_text: Optional[str] = Field(None, description="Final output")
+    processing_duration_seconds: Optional[int] = Field(None, description="Processing time")
+    ai_token_usage: Optional[int] = Field(None, description="Tokens consumed")
+    output_filename_txt: Optional[str] = Field(None, description="Text output filename")
+    output_filename_docx: Optional[str] = Field(None, description="Word output filename")
+
+    class Config:
+        from_attributes = True
+        json_schema_extra = {
+            "example": {
+                "id": 1,
+                "user_id": 1,
+                "original_filename": "lecture.mp3",
+                "display_filename": "Lecture Audio",
+                "language": "fa-IR",
+                "timestamp": "2023-01-01T00:00:00",
+                "timestamp_local": "1401-10-11T03:30:00",
+                "status": "completed",
+                "final_result_text": "متن پیاده‌سازی شده...",
+                "output_filename_txt": "1_lecture.txt",
+                "output_filename_docx": "1_lecture.docx"
+            }
+        }
+
+class TransactionBase(BaseModel):
+    """Base transaction schema"""
+    amount: float = Field(..., description="Transaction amount")
+    description: str = Field(..., max_length=255, description="Transaction purpose")
+
+class TransactionCreate(TransactionBase):
+    """Schema for creating transactions"""
+    token_price_at_transaction: Optional[float] = Field(None, description="Price per token at transaction time")
+
+class Transaction(TransactionBase):
+    """Complete transaction schema"""
+    id: int
+    user_id: int
+    timestamp: datetime
+    timestamp_shamsi: str
+    token_price_at_transaction: Optional[float]
+
+    class Config:
+        from_attributes = True
+
+class APIKeyInfo(BaseModel):
+    """Schema for API key information"""
+    key: str
+    created_at: datetime
+    last_used_at: Optional[datetime]
+    is_active: bool
+    total_calls: int
+    total_tokens_used: int
+
+    class Config:
+        from_attributes = True
+
+class SettingSchema(BaseModel):
+    """Schema for application settings"""
+    key: str
+    value: str
+
+    class Config:
+        from_attributes = True
+
+
+schemas_external.py
+from pydantic import BaseModel, HttpUrl, Field
+from typing import Literal, Optional
+
+
+class ExternalJobCreate(BaseModel):
+    file_url: HttpUrl = Field(..., example="https://cdn.site.com/audio/abc.mp3")
+    language: str = Field("fa")
+    mode: Literal["transcribe_only", "transcribe_and_fix"] = "transcribe_only"
+    callback_url: Optional[HttpUrl] = None
+
+
+class JobQueuedResp(BaseModel):
+    job_id: str
+    status: Literal["queued"]
+    estimated_cost: float
+
+
+class JobStatusResp(BaseModel):
+    job_id: str
+    status: str
+    mode: str
+    raw_text: Optional[str]
+    ai_text: Optional[str]
+    charged: Optional[float]
+
+    class Config:
+        orm_mode = True
+
+
+# app/templating.py
+# ساخت و پیکربندی شیء Jinja2Templates مرکزی
+
+from pathlib import Path
+from fastapi.templating import Jinja2Templates
+import jdatetime
+
+BASE_DIR   = Path(__file__).resolve().parent.parent   # fastapi_transcriber/
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# اضافه کردن jdatetime به محیط Jinja2 تا در همهٔ قالب‌ها در دسترس باشد
+templates.env.globals["jdatetime"] = jdatetime
+
+
+auth_api.py
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
+from .database import get_db
+from .models import APIKey
+
+
+def get_current_service_user(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None, alias="Authorization"),
+):
+    """
+    دریافت Bearer <token> و تحویل یوزر سرویس
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing token")
+    token = authorization.split(" ", 1)[1].strip()
+
+    api_key = (
+        db.query(APIKey)
+        .filter(APIKey.key == token, APIKey.is_active.is_(True))
+        .first()
+    )
+    if not api_key:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid token")
+
+    return api_key.owner  # -> models.User
+

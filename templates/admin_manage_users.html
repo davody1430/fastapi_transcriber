@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}مدیریت کاربران{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <h1>مدیریت کاربران</h1>
+    <a href="/dashboard"> &larr; بازگشت به داشبورد اصلی مدیر</a>
+</div>
+
+<div style="display: flex; gap: 30px;">
+    <!-- فرم ایجاد کاربر سمت چپ -->
+    <div class="panel" style="width: 350px; min-width: 300px;">
+        <h2>ایجاد کاربر جدید</h2>
+
+        {% if error %}
+            <div style="background-color: #f8d7da; color: #721c24; padding: 1rem; border: 1px solid #f5c6cb; border-radius: .25rem; margin-bottom: 1rem;">
+                {{ error }}
+            </div>
+        {% endif %}
+
+        <form action="/admin/create_user" method="post" style="display: flex; flex-direction: column; gap: 10px;">
+            <label for="username">نام کاربری:</label>
+            <input type="text" id="username" name="username" required>
+
+            <label for="password">رمز عبور:</label>
+            <input type="password" id="password" name="password" required>
+
+            <label for="role">نقش:</label>
+            <select id="role" name="role">
+                <option value="employee">کارمند</option>
+                <option value="customer">مشتری</option>
+                <option value="admin">مدیر</option>
+            </select>
+
+            <label for="file_limit">محدودیت روزانه فایل:</label>
+            <input type="number" id="file_limit" name="file_limit" value="5" required>
+
+            <label for="wallet_balance">اعتبار اولیه (ریال):</label>
+            <input type="number" id="wallet_balance" name="wallet_balance" value="0" required>
+
+            <label for="token_price">قیمت هر توکن (ریال):</label>
+            <input type="number" step="any" id="token_price" name="token_price" value="10" required>
+
+            <button type="submit" style="margin-top: 10px;">ایجاد کاربر</button>
+        </form>
+    </div>
+
+    <!-- جدول کاربران سمت راست -->
+    <div class="panel" style="flex: 1; max-height: 600px; overflow-y: auto;">
+        <h2>لیست کاربران</h2>
+        <form method="get" action="/admin/manage-users" style="display: flex; gap: 5px; margin-bottom: 10px;">
+            <input type="text" name="user_search" placeholder="جستجوی نام کاربری..." value="{{ user_search or '' }}" style="flex-grow:1;">
+            <button type="submit" style="width: auto;">جستجو</button>
+        </form>
+        <table>
+            <thead>
+                <tr>
+                    <th>نام کاربری</th>
+                    <th>نقش</th>
+                    <th>موجودی (ریال)</th>
+                    <th>قیمت توکن</th>
+                    <th>عملیات</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr>
+                    <td>{{ u.username }}</td>
+                    <td>
+                        {% if u.role.name == 'admin' %} مدیر
+                        {% elif u.role.name == 'employee' %} کارمند
+                        {% elif u.role.name == 'customer' %} مشتری
+                        {% endif %}
+                    </td>
+                    <td>{{ "{:,.0f}".format(u.wallet_balance) }}</td>
+                    <td>{{ u.token_price }}</td>
+                    <td><a href="/admin/users/{{ u.id }}/profile">مشاهده پنل کاربر</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function showToast(message) {
+        Toastify({
+            text: message,
+            duration: 5000,
+            gravity: "bottom",
+            position: "center",
+            backgroundColor: '#4CAF50'
+        }).showToast();
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+        const params = new URLSearchParams(window.location.search);
+        const msgCode = params.get('msg');
+        if (msgCode) {
+            const messages = {
+                'user-created': 'کاربر جدید با موفقیت ایجاد شد.'
+            };
+            if (messages[msgCode]) {
+                showToast(messages[msgCode]);
+            }
+            window.history.replaceState({}, '', '/admin/manage-users');
+        }
+    });
+</script>
+{% endblock %}

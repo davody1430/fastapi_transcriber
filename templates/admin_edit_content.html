@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}ویرایش صفحه: {{ page_title }}{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <h1>ویرایش صفحه: {{ page_title }}</h1>
+    <a href="/admin/content"> &larr; بازگشت به لیست صفحات</a>
+</div>
+<div class="panel">
+    <p>شما می‌توانید محتوای این صفحه را با استفاده از تگ‌های HTML در کادر زیر ویرایش کنید.</p>
+    <form action="/admin/content/edit/{{ page_key }}" method="post">
+        <textarea name="content" rows="20" style="width: 100%; direction: ltr; text-align: left;">{{ content }}</textarea>
+        <button type="submit">ذخیره تغییرات</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('msg') === 'content-updated') {
+            Toastify({ text: "محتوای صفحه با موفقیت به‌روز شد.", duration: 5000 }).showToast();
+            const url = new URL(window.location);
+            url.searchParams.delete('msg');
+            window.history.replaceState({}, '', url);
+        }
+    });
+</script>
+{% endblock %}

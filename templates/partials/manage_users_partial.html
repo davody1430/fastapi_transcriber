@@ -1,0 +1,63 @@
+<!-- ======= کاربران ======= -->
+<h2 class="text-center mb-1">کاربران</h2>
+
+<div style="display:flex;gap:30px;flex-wrap:wrap">
+    <!-- فرم ایجاد -->
+    <div class="panel" style="width:350px;min-width:300px">
+        <h3>ایجاد کاربر جدید</h3>
+        {% if error %}
+        <div style="background:#f8d7da;color:#721c24;padding:1rem;border:1px solid #f5c6cb;border-radius:.25rem;margin-bottom:1rem">
+            {{ error }}
+        </div>
+        {% endif %}
+        <form action="/admin/create_user" method="post" style="display:flex;flex-direction:column;gap:10px">
+            <label>نام کاربری:<input type="text" name="username" required></label>
+            <label>رمز عبور:<input type="password" name="password" required></label>
+            <label>نقش:
+                <select name="role">
+                    <option value="employee">کارمند</option>
+                    <option value="customer">مشتری</option>
+                    <option value="admin">مدیر</option>
+                </select>
+            </label>
+            <label>حداکثر فایل/روز:<input type="number" name="file_limit" value="5" required></label>
+            <label>اعتبار اولیه (ریال):<input type="number" name="wallet_balance" value="0" required></label>
+            <label>قیمت هر توکن (ریال):<input type="number" step="any" name="token_price" value="10" required></label>
+            <button type="submit" class="btn" style="margin-top:10px">ایجاد کاربر</button>
+        </form>
+    </div>
+
+    <!-- جدول -->
+    <div class="panel" style="flex:1;max-height:600px;overflow-y:auto">
+        <h3>فهرست کاربران</h3>
+        <form method="get" action="/admin/manage-users" style="display:flex;gap:5px;margin-bottom:10px">
+            <input type="text" name="user_search" placeholder="جستجوی نام کاربری..." value="{{ user_search or '' }}" style="flex-grow:1">
+            <button type="submit" style="width:auto">جستجو</button>
+        </form>
+
+        <table data-datatables>
+            <thead>
+                <tr>
+                    <th>#</th><th>نام کاربری</th><th>نقش</th><th>ایمیل</th><th>تاریخ ثبت‌نام</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr>
+                    <td>{{ loop.index }}</td>
+                    <td><a href="/admin/users/{{ u.id }}/profile">{{ u.username }}</a></td>
+                    <td>{{ u.role.name }}</td>
+                    <td>{{ u.email or '-' }}</td>
+                    <td>{{ u.created_at.date() }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% if error is defined %}
+<script>
+Toastify({text:"{{ error }}",duration:5000,gravity:"bottom",position:"center",backgroundColor:"#f44336"}).showToast();
+</script>
+{% endif %}

@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}مستندات API{% endblock %}
+
+{% block content %}
+<div class="panel" style="line-height: 1.9;">
+    <h1 style="border-bottom: 2px solid #eee; padding-bottom: 15px;">📘 مستندات جامع API سایت دستیار صوت و متن</h1>
+
+    <p>
+        این مستند برای توسعه‌دهندگانی طراحی شده که می‌خواهند از خدمات <strong>پیاده‌سازی صوت</strong> و
+        <strong>اصلاح متن با هوش مصنوعی</strong> در سایت یا نرم‌افزار خود استفاده کنند. آدرس سایت شما:
+        <code>dastyaresot.ir</code>
+    </p>
+
+    <h2>🔐 دریافت کلید API</h2>
+    <p>
+        برای استفاده از API ابتدا باید از مدیر سامانه یک <strong>کلید اختصاصی (API Key)</strong> دریافت کنید. این کلید در
+        هدر هر درخواست استفاده می‌شود.
+    </p>
+
+    <h2>✅ آدرس اصلی API</h2>
+    <pre style="direction: ltr; background: #f8f9fa; padding: 10px; border: 1px solid #ccc;">
+POST https://dastyaresot.ir/api/transcribe/ai
+    </pre>
+
+    <h2>📤 ساختار درخواست</h2>
+    <ul>
+        <li><strong>Authorization:</strong> باید در هدر نوشته شود: <code>Bearer YOUR_API_KEY</code></li>
+        <li><strong>file:</strong> فایل صوتی یا متنی، به صورت <code>multipart/form-data</code></li>
+    </ul>
+
+    <h2>📥 پاسخ API</h2>
+    <pre style="direction: ltr; background: #f8f9fa; padding: 10px; border: 1px solid #ccc;">
+{
+  "status": "completed",
+  "result_text": "متن نهایی اینجا قرار می‌گیرد",
+  "token_used": 238,
+  "cost": 952,
+  "duration": 4.3
+}
+    </pre>
+
+    <h3>توضیح فیلدها:</h3>
+    <ul>
+        <li><strong>status:</strong> وضعیت پردازش (completed یا failed)</li>
+        <li><strong>result_text:</strong> نتیجه پردازش‌شده</li>
+        <li><strong>token_used:</strong> تعداد توکن مصرفی</li>
+        <li><strong>cost:</strong> هزینه نهایی (به ریال)</li>
+        <li><strong>duration:</strong> زمان پردازش (ثانیه)</li>
+    </ul>
+
+    <h2>🔧 نمونه‌کد در زبان‌های مختلف</h2>
+
+    <h3>🟦 Python (کتابخانه requests)</h3>
+    <pre style="direction: ltr; background: #f8f9fa; padding: 10px; border: 1px solid #ccc;">
+import requests
+
+API_KEY = "YOUR_API_KEY"
+url = "https://dastyaresot.ir/api/transcribe/ai"
+file_path = "sample.mp3"
+
+with open(file_path, "rb") as f:
+    response = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {API_KEY}"},
+        files={"file": f}
+    )
+
+print(response.json())
+    </pre>
+
+    <h3>🟨 PHP</h3>
+    <pre style="direction: ltr; background: #f8f9fa; padding: 10px; border: 1px solid #ccc;">
+&lt;?php
+$apiKey = "YOUR_API_KEY";
+$url = "https://dastyaresot.ir/api/transcribe/ai";
+$filePath = "sample.mp3";
+
+$curl = curl_init();
+
+curl_setopt_array($curl, [
+    CURLOPT_URL => $url,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => [
+        "file" => new CURLFile($filePath),
+    ],
+    CURLOPT_HTTPHEADER => [
+        "Authorization: Bearer $apiKey"
+    ]
+]);
+
+$response = curl_exec($curl);
+curl_close($curl);
+
+echo $response;
+?&gt;
+    </pre>
+
+    <h3>🟩 Node.js (با axios)</h3>
+    <pre style="direction: ltr; background: #f8f9fa; padding: 10px; border: 1px solid #ccc;">
+const axios = require("axios");
+const fs = require("fs");
+const FormData = require("form-data");
+
+const apiKey = "YOUR_API_KEY";
+const filePath = "sample.mp3";
+
+const form = new FormData();
+form.append("file", fs.createReadStream(filePath));
+
+axios.post("https://dastyaresot.ir/api/transcribe/ai", form, {
+    headers: {
+        ...form.getHeaders(),
+        Authorization: `Bearer ${apiKey}`
+    }
+})
+.then(res => console.log(res.data))
+.catch(err => console.error(err));
+    </pre>
+
+    <h3>🟫 Bash (curl)</h3>
+    <pre style="direction: ltr; background: #f8f9fa; padding: 10px; border: 1px solid #ccc;">
+curl -X POST https://dastyaresot.ir/api/transcribe/ai \
+  -H "Authorization: Bearer YOUR_API_KEY" \
+  -F "file=@sample.mp3"
+    </pre>
+
+    <h2>⚠️ نکات امنیتی</h2>
+    <ul>
+        <li>کلید API را در اختیار اشخاص ناشناس قرار ندهید.</li>
+        <li>در صورت افشای کلید، فوراً آن را غیرفعال کنید.</li>
+        <li>در صورت نیاز، برای هر پروژه کلید جداگانه بسازید.</li>
+    </ul>
+
+    <h2>❓ پرسش‌های متداول</h2>
+    <ul>
+        <li><strong>آیا فایل متنی هم قابل پردازش است؟</strong> بله، فایل‌های TXT و DOCX نیز پشتیبانی می‌شوند.</li>
+        <li><strong>هزینه استفاده چگونه محاسبه می‌شود؟</strong> بر اساس تعداد توکن مصرف‌شده × قیمت هر توکن در حساب شما.</li>
+        <li><strong>نتیجهٔ پردازش چگونه بازگردانده می‌شود؟</strong> به صورت JSON در پاسخ HTTP</li>
+    </ul>
+
+    <p>در صورت نیاز به راهنمایی بیشتر، با تیم پشتیبانی سایت <a href="https://dastyaresot.ir">dastyaresot.ir</a> تماس بگیرید.</p>
+</div>
+{% endblock %}

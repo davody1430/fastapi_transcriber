@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+
+{% block title %}ورود به سامانه{% endblock %}
+
+{% block content %}
+<div class="login-container" style="display: flex; justify-content: center; align-items: center; min-height: 80vh;">
+    <div class="panel" style="width: 100%; max-width: 400px; text-align: center;">
+        <h2>ورود به حساب کاربری</h2>
+        {% if error %}
+            <div style="background-color: #f8d7da; color: #721c24; padding: 1rem; border: 1px solid #f5c6cb; border-radius: .25rem; margin-bottom: 1rem;">
+                {{ error }}
+            </div>
+        {% endif %}
+        <form action="/token" method="post" style="display: flex; flex-direction: column; gap: 12px; align-items: center;">
+            <label for="username" style="align-self: center;">نام کاربری:</label>
+            <input type="text" id="username" name="username" required style="text-align: center; width: 100%; max-width: 300px;">
+            
+            <label for="password" style="align-self: center;">رمز عبور:</label>
+            <input type="password" id="password" name="password" required style="text-align: center; width: 100%; max-width: 300px;">
+            
+            <button type="submit" style="width: 50%; margin-top: 10px;">ورود</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

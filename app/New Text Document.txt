@@ -1,0 +1,691 @@
+auth.py
+from datetime import datetime, timedelta
+from typing import Optional
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+from app.core.config import settings
+
+# تنظیمات رمزنگاری
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    بررسی تطابق رمز عبور ساده با نسخه هش شده
+    
+    Args:
+        plain_password: رمز عبور ورودی کاربر
+        hashed_password: رمز هش شده در دیتابیس
+    
+    Returns:
+        bool: True اگر رمزها مطابقت داشته باشند
+    """
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str) -> str:
+    """
+    تولید هش رمز عبور
+    
+    Args:
+        password: رمز عبور خام
+    
+    Returns:
+        str: رمز عبور هش شده
+    """
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """
+    ایجاد توکن دسترسی JWT
+    
+    Args:
+        data: داده‌های مورد نظر برای قرارگیری در توکن
+        expires_delta: مدت زمان انقضای توکن
+    
+    Returns:
+        str: توکن دسترسی رمزنگاری شده
+    """
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    to_encode.update({"exp": expire})
+    return jwt.encode(
+        to_encode,
+        settings.SECRET_KEY.get_secret_value(),
+        algorithm=settings.JWT_ALGORITHM
+    )
+
+def decode_token(token: str) -> dict:
+    """
+    رمزگشایی توکن JWT
+    
+    Args:
+        token: توکن دریافتی
+    
+    Returns:
+        dict: داده‌های داخل توکن
+        
+    Raises:
+        JWTError: اگر توکن نامعتبر باشد
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY.get_secret_value(),
+            algorithms=[settings.JWT_ALGORITHM]
+        )
+        return payload
+    except JWTError as e:
+        raise e
+
+
+crud.py
+# -*- coding: utf-8 -*-
+"""
+CRUD helpers for DastYar‑e SOT
+"""
+
+from __future__ import annotations
+import os
+import uuid
+import logging
+from datetime import date, datetime, timezone, timedelta
+from typing import List, Optional
+
+import docx
+from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import Session
+
+from app import models, auth
+from app.core.config import settings
+from app.core.file_manager import file_manager
+
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# 🕒 Helper
+# =============================================================================
+def _now_tehran() -> datetime:
+    return datetime.now(timezone(timedelta(hours=3, minutes=30)))
+
+# =============================================================================
+# 🟢 کاربران
+# =============================================================================
+def get_user(db: Session, user_id: int) -> models.User | None:
+    return db.query(models.User).filter(models.User.id == user_id).first()
+
+def get_user_by_username(db: Session, username: str) -> models.User | None:
+    return db.query(models.User).filter(models.User.username == username).first()
+
+def get_users(
+    db: Session,
+    username_filter: str | None = None,
+    skip: int = 0,
+    limit: int = 100,
+):
+    q = db.query(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return q.order_by(models.User.id.desc()).offset(skip).limit(limit).all()
+
+def create_user(db: Session, user_create) -> models.User:
+    hashed_pw = auth.get_password_hash(user_create.password)
+    db_user = models.User(
+        username=user_create.username,
+        hashed_password=hashed_pw,
+        role=user_create.role,
+        file_limit=user_create.file_limit,
+        wallet_balance=user_create.wallet_balance,
+        token_price=user_create.token_price,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    logger.info(f"User created: {db_user.username}")
+    return db_user
+
+def update_user_password(db: Session, user: models.User, new_plain_pw: str):
+    user.hashed_password = auth.get_password_hash(new_plain_pw)
+    db.commit()
+    logger.info(f"Password updated for user: {user.username}")
+
+def update_user_details(
+    db: Session,
+    user_to_update: models.User,
+    username: str,
+    file_limit: int,
+    token_price: float,
+):
+    user_to_update.username = username
+    user_to_update.file_limit = file_limit
+    user_to_update.token_price = token_price
+    db.commit()
+    db.refresh(user_to_update)
+    logger.info(f"User details updated: {user_to_update.username}")
+
+# =============================================================================
+# 🟢 تراکنش و کیف پول
+# =============================================================================
+def create_transaction(
+    db: Session,
+    user_id: int,
+    amount: float,
+    description: str,
+    token_price: Optional[float] = None,
+):
+    tx = models.Transaction(
+        user_id=user_id,
+        amount=amount,
+        description=description,
+        token_price_at_transaction=token_price,
+        timestamp=_now_tehran(),
+    )
+    db.add(tx)
+    logger.info(f"Transaction created for user {user_id}: {description}")
+    return tx
+
+def adjust_user_balance(db: Session, user: models.User, amount: float, description: str):
+    if amount == 0:
+        return
+    user.wallet_balance += amount
+    create_transaction(db, user.id, amount, description, user.token_price)
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Balance adjusted for {user.username}: {amount}")
+
+def debit_from_wallet(db: Session, user: models.User, cost: float, description: str):
+    db.refresh(user)
+    if user.wallet_balance < cost:
+        logger.warning(f"Insufficient balance for user {user.username}")
+        raise ValueError("موجودی ناکافی برای این عملیات")
+    user.wallet_balance -= cost
+    create_transaction(db, user.id, -cost, description, user.token_price)
+    db.commit()
+    db.refresh(user)
+    logger.info(f"Debited {cost} from {user.username}")
+
+# =============================================================================
+# 🟢 فایل‌های رونوشت
+# =============================================================================
+def create_transcription_record(
+    db: Session,
+    filename: str,
+    user_id: int,
+    lang: str,
+    original_filename: Optional[str] = None,
+) -> models.TranscriptionFile:
+    rec = models.TranscriptionFile(
+        user_id=user_id,
+        original_filename=original_filename or filename,
+        display_filename=filename,
+        language=lang,
+        status="queued",
+        timestamp=_now_tehran(),
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    logger.info(f"Transcription record created: {rec.id}")
+    return rec
+
+def set_task_id(db: Session, record_id: int, task_id: str):
+    rec = db.query(models.TranscriptionFile).get(record_id)
+    if rec:
+        rec.celery_task_id = task_id
+        db.commit()
+        logger.info(f"Task ID set for record {record_id}: {task_id}")
+
+def update_transcription_status(db: Session, record_id: int, status: str):
+    rec = db.query(models.TranscriptionFile).get(record_id)
+    if rec:
+        rec.status = status
+        if status in ("completed", "failed", "canceled"):
+            rec.finished_at = _now_tehran()
+        db.commit()
+        logger.info(f"Status updated for record {record_id}: {status}")
+
+def finalize_job(
+    db: Session,
+    record: models.TranscriptionFile,
+    final_text: str,
+    duration: int,
+):
+    record.status = "completed"
+    record.final_result_text = final_text
+    record.processing_duration_seconds = duration
+
+    base = f"{record.id}_{record.original_filename.rsplit('.', 1)[0]}"
+    txt_name = f"{base}.txt"
+    file_manager.save_file(final_text.encode('utf-8'), txt_name)
+    record.output_filename_txt = txt_name
+
+    doc = docx.Document()
+    doc.add_paragraph(final_text)
+    docx_name = f"{base}.docx"
+    doc_path = file_manager.get_upload_path(docx_name)
+    doc.save(doc_path)
+    record.output_filename_docx = docx_name
+
+    db.commit()
+    logger.info(f"Job finalized: {record.id}")
+
+def get_job(db: Session, job_id: int, owner: models.User):
+    q = db.query(models.TranscriptionFile).filter_by(id=job_id)
+    if owner.role != models.Role.admin:
+        q = q.filter_by(user_id=owner.id)
+    return q.first()
+
+# =============================================================================
+# 🟢 کوئری‌های رونوشت برای صفحات
+# =============================================================================
+def get_transcription(db: Session, record_id: int) -> models.TranscriptionFile | None:
+    return db.query(models.TranscriptionFile).get(record_id)
+
+def get_user_transcriptions(db: Session, user_id: int, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.TranscriptionFile)
+        .filter(models.TranscriptionFile.user_id == user_id)
+        .order_by(models.TranscriptionFile.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def get_user_transcriptions_count(db: Session, user_id: int) -> int:
+    return db.query(models.TranscriptionFile).filter(models.TranscriptionFile.user_id == user_id).count()
+
+def get_all_transcriptions(db: Session, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.TranscriptionFile)
+        .order_by(models.TranscriptionFile.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def get_all_transcriptions_count(db: Session) -> int:
+    return db.query(models.TranscriptionFile).count()
+
+def get_transcriptions_by_ids(db: Session, user_id: int, job_ids: List[int]):
+    return (
+        db.query(models.TranscriptionFile)
+        .filter(
+            models.TranscriptionFile.id.in_(job_ids),
+            models.TranscriptionFile.user_id == user_id,
+        )
+        .all()
+    )
+
+# =============================================================================
+# 🟢 تراکنش‌ها (گزارش)
+# =============================================================================
+def get_user_transactions(db: Session, user_id: int, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.Transaction)
+        .filter(models.Transaction.user_id == user_id)
+        .order_by(models.Transaction.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def get_user_transactions_count(db: Session, user_id: int) -> int:
+    return db.query(models.Transaction).filter(models.Transaction.user_id == user_id).count()
+
+def get_all_transactions(
+    db: Session,
+    username_filter: str | None = None,
+    skip: int = 0,
+    limit: int = 15,
+):
+    q = db.query(models.Transaction).join(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return (
+        q.order_by(models.Transaction.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def get_all_transactions_count(db: Session, username_filter: str | None = None) -> int:
+    q = db.query(models.Transaction).join(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return q.count()
+
+# =============================================================================
+# 🟢 Settings
+# =============================================================================
+def get_setting(db: Session, key: str):
+    return db.query(models.Setting).filter(models.Setting.key == key).first()
+
+def update_setting(db: Session, key: str, value: str):
+    s = get_setting(db, key)
+    if s:
+        s.value = value
+    else:
+        s = models.Setting(key=key, value=value)
+        db.add(s)
+    db.commit()
+    logger.info(f"Setting updated: {key}")
+
+def upsert_setting(db: Session, key: str, value: str):
+    try:
+        setting = db.query(models.Setting).filter(models.Setting.key == key).one()
+        setting.value = value
+    except NoResultFound:
+        setting = models.Setting(key=key, value=value)
+        db.add(setting)
+    db.commit()
+    db.refresh(setting)
+    logger.info(f"Setting upserted: {key}")
+    return setting
+
+# =============================================================================
+# 🟢 API KEY CRUD
+# =============================================================================
+def _generate_api_key() -> str:
+    return uuid.uuid4().hex + uuid.uuid4().hex
+
+def create_api_key(db: Session, user: models.User) -> models.APIKey:
+    key = _generate_api_key()
+    api_key = models.APIKey(key=key, owner=user)
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+    logger.info(f"API key created for user: {user.username}")
+    return api_key
+
+def get_api_key(db: Session, key_str: str) -> Optional[models.APIKey]:
+    return db.query(models.APIKey).filter(models.APIKey.key == key_str).first()
+
+def get_api_key_by_user(db: Session, user: models.User) -> Optional[models.APIKey]:
+    return (
+        db.query(models.APIKey)
+        .filter(models.APIKey.user_id == user.id, models.APIKey.is_active.is_(True))
+        .first()
+    )
+
+def deactivate_api_key(db: Session, api_key: models.APIKey):
+    api_key.is_active = False
+    db.commit()
+    logger.info(f"API key deactivated: {api_key.key}")
+
+database.py
+# app/database.py
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+# --- بازگشت به استفاده از دیتابیس محلی SQLite ---
+# این آدرس به برنامه می‌گوید که یک فایل به نام transcriber.db در ریشه پروژه ایجاد کند.
+SQLALCHEMY_DATABASE_URL = "sqlite:///./transcriber.db"
+
+# ساخت موتور SQLAlchemy برای اتصال به دیتابیس
+# آرگومان connect_args برای سازگاری با SQLite ضروری است
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+)
+
+# ساخت یک کلاس Session برای ارتباط با دیتابیس در هر درخواست
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# ساخت یک کلاس پایه برای تمام مدل‌های دیتابیس
+Base = declarative_base()
+
+messages.py
+# پیام‌های سیستم
+INVALID_CREDENTIALS = "نام کاربری یا رمز عبور اشتباه است"
+PASSWORD_CHANGE_SUCCESS = "رمز عبور با موفقیت تغییر کرد"
+PASSWORD_CHANGE_ERROR = "رمز عبور فعلی اشتباه است"
+FILE_LIMIT_EXCEEDED = "محدودیت روزانه شما کافی نیست"
+INVALID_FILE_TYPE = "فقط فایل‌های txt یا docx مجازند"
+
+celery_app.py
+import os
+from celery import Celery
+from dotenv import load_dotenv
+from app.core.config import settings
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Celery
+celery_app = Celery(
+    "dastyaresot",
+    broker=settings.CELERY_BROKER_URL,
+    backend=settings.CELERY_RESULT_BACKEND,
+    include=[
+        "app.tasks.audio",
+        "app.tasks.text_tasks",
+        "app.tasks.external_tasks"
+    ]
+)
+
+# Default configuration
+celery_app.conf.update(
+    # Basic settings
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    timezone="Asia/Tehran",
+    enable_utc=True,
+    
+    # Task routing
+    task_default_queue="default",
+    task_create_missing_queues=True,
+    
+    # Retry policy
+    task_default_retry_delay=60,  # 1 minute
+    task_max_retries=3,
+    task_track_started=True,
+    
+    # Result expiration
+    result_expires=24 * 3600,  # 1 day
+    
+    # Worker settings
+    worker_prefetch_multiplier=1,
+    worker_concurrency=4,
+    worker_max_tasks_per_child=100,
+    
+    # Security
+    worker_send_task_events=True,
+    event_queue_expires=60,
+    worker_proc_alive_timeout=30,
+)
+
+# Queue routing
+celery_app.conf.task_routes = {
+    "app.tasks.audio.*": {"queue": "audio"},
+    "app.tasks.text_tasks.*": {"queue": "text"},
+    "app.tasks.external_tasks.*": {"queue": "api"},
+}
+
+# Task-specific settings
+celery_app.conf.task_annotations = {
+    # Audio tasks
+    "app.tasks.audio.parallel_audio_job": {
+        "time_limit": 1800,  # 30 minutes
+        "soft_time_limit": 1500,  # 25 minutes
+        "max_retries": 5,
+        "default_retry_delay": 120,  # 2 minutes
+    },
+    
+    # Text processing tasks
+    "app.tasks.text_tasks.background_text_correction_task": {
+        "time_limit": 600,  # 10 minutes
+        "max_retries": 3,
+    },
+    
+    # External API tasks
+    "app.tasks.external_tasks.enqueue_external_job": {
+        "time_limit": 1200,  # 20 minutes
+        "rate_limit": "10/m",  # 10 per minute
+    }
+}
+
+# Periodic tasks (Beat schedule)
+celery_app.conf.beat_schedule = {
+    "cleanup_expired_sessions": {
+        "task": "app.tasks.maintenance.cleanup_expired_sessions",
+        "schedule": 3600,  # Every hour
+        "options": {"queue": "maintenance"}
+    },
+    "update_daily_limits": {
+        "task": "app.tasks.maintenance.reset_daily_limits",
+        "schedule": 86400,  # Daily
+        "options": {"queue": "maintenance"}
+    }
+}
+
+if __name__ == "__main__":
+    celery_app.start()
+
+
+models.py
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import enum
+from datetime import datetime, date
+
+import jdatetime
+import pytz
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Boolean,
+)
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import relationship
+
+from .database import Base
+
+
+class Role(str, enum.Enum):
+    admin = "admin"
+    employee = "employee"
+    customer = "customer"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+
+    role = Column(Enum(Role), nullable=False, default=Role.customer)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    file_limit = Column(Integer, default=5)
+    daily_transcription_count = Column(Integer, default=0)
+    last_transcription_date = Column(Date, nullable=True)
+
+    wallet_balance = Column(Float, default=0.0)
+    token_price = Column(Float, default=10.0)
+
+    is_active = Column(Boolean, default=True)
+
+    transcriptions = relationship("TranscriptionFile", back_populates="owner")
+    transactions   = relationship("Transaction",        back_populates="user")
+    api_keys       = relationship("APIKey",             back_populates="owner")
+
+
+class TranscriptionFile(Base):
+    __tablename__ = "transcriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    original_filename = Column(String, nullable=False)
+    # ← ستون جدید برای نام نمایشی در داشبورد
+    display_filename  = Column(String, nullable=False)
+
+    language = Column(String, nullable=False)
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    status    = Column(String, default="pending")   # pending | queued | processing | completed | failed | canceled
+
+    celery_task_id = Column(String(50), nullable=True, index=True)
+
+    raw_result_text   = Column(Text, nullable=True)
+    ai_result_text    = Column(Text, nullable=True)
+    final_result_text = Column(Text, nullable=True)
+
+    processing_duration_seconds = Column(Integer, nullable=True)
+    ai_token_usage              = Column(Integer, nullable=True)
+
+    output_filename_txt  = Column(String, nullable=True)
+    output_filename_docx = Column(String, nullable=True)
+
+    owner = relationship("User", back_populates="transcriptions")
+
+    @hybrid_property
+    def timestamp_local(self):
+        utc_ts   = self.timestamp.replace(tzinfo=pytz.utc)
+        local_tz = pytz.timezone("Asia/Tehran")
+        return utc_ts.astimezone(local_tz)
+
+    @hybrid_property
+    def user(self):
+        return self.owner
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    amount = Column(Float, nullable=False)
+    description = Column(String, nullable=False)
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    token_price_at_transaction = Column(Float, nullable=True)
+
+    user = relationship("User", back_populates="transactions")
+
+    @hybrid_property
+    def timestamp_shamsi(self):
+        utc_ts   = self.timestamp.replace(tzinfo=pytz.utc)
+        local_tz = pytz.timezone("Asia/Tehran")
+        local_time = utc_ts.astimezone(local_tz)
+        return jdatetime.datetime.fromgregorian(datetime=local_time)
+
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+
+    is_active = Column(Boolean, default=True)
+
+    total_calls       = Column(Integer, default=0)
+    total_tokens_used = Column(Integer, default=0)
+
+    owner = relationship("User", back_populates="api_keys")
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key   = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
+
+
+

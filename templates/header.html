@@ -1,0 +1,23 @@
+<header class="site-header">
+    <div class="logo">
+        <a href="/">دستیار صوت و متن</a>
+    </div>
+    <nav class="main-nav">
+        {% if user %}
+            {% if user.role.name == 'admin' %}
+                <a href="/admin/hub" class="admin-panel-link">پنل مدیریت</a>
+            {% endif %}
+            <a href="/dashboard">داشبورد من</a>
+            <a href="/history">گردش حساب</a>
+            <a href="/change-password">تغییر رمز</a>
+            <a href="/logout">خروج</a>
+            <span class="wallet-balance">موجودی: <strong>{{ "{:,.0f}".format(user.wallet_balance) }} ریال</strong></span>
+        {% endif %}
+        <div class="theme-switch-wrapper">
+            <label class="theme-switch" for="theme-checkbox">
+                <input type="checkbox" id="theme-checkbox" />
+                <div class="slider round"></div>
+            </label>
+        </div>
+    </nav>
+</header>

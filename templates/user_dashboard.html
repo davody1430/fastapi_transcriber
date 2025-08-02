@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}داشبورد کاربر{% endblock %}
+
+{% block content %}
+<!-- ───── خط خوشامد ───── -->
+<div class="panel">
+  <p style="margin:0">
+    کاربر گرامی <strong>{{ user.username }}</strong>، خوش آمدید. سهمیهٔ روزانهٔ شما
+    <strong>{{ user.file_limit }}</strong> فایل است.
+  </p>
+</div>
+
+<!-- ───── سربرگ تب‌ها ───── -->
+<div class="tabs">
+  <button class="tab-btn active" data-target="#audio-pane">پیاده‌سازی صوت</button>
+  <button class="tab-btn" data-target="#text-pane">اصلاح متن</button>
+</div>
+
+<!-- ───── تب پیاده‌سازی صوت ───── -->
+<div id="audio-pane" class="tab-pane show">
+  <div class="panel">
+    <h2>بارگذاری فایل صوتی/تصویری</h2>
+    <form id="audio-form" action="/transcribe/" method="post" enctype="multipart/form-data">
+      <input id="audio-file-input" type="file" name="files" accept="audio/*,video/*" multiple hidden>
+      <button type="button" class="btn-secondary" onclick="document.getElementById('audio-file-input').click()">انتخاب فایل</button>
+      <ul id="audio-file-list" class="file-list"><li>هنوز فایلی انتخاب نشده است.</li></ul>
+
+      <label>زبان:</label>
+      <select name="language">
+        <option value="fa-IR">فارسی</option>
+        <option value="en-US">English</option>
+        <option value="ar-SA">العربیة</option>
+      </select>
+
+      <label class="ai-checkbox">
+        <input type="checkbox" name="use_ai_correction" value="true"> اصلاح خروجی با هوش مصنوعی (هزینه‌دار)
+      </label>
+
+      <button id="submit-audio" type="submit">ارسال برای پیاده‌سازی</button>
+    </form>
+  </div>
+</div>
+
+<!-- ───── تب اصلاح متن ───── -->
+<div id="text-pane" class="tab-pane">
+  <div class="panel">
+    <h2>بارگذاری فایل متنی برای اصلاح</h2>
+    <p class="hint">فقط فایل‌های ‎.txt‎ یا ‎.docx‎ پذیرفته می‌شود.</p>
+
+    <form id="text-form" action="/correct-text/" method="post" enctype="multipart/form-data">
+      <input id="text-file-input" type="file" name="files" accept=".txt,.docx" multiple hidden>
+      <button type="button" class="btn-secondary" onclick="document.getElementById('text-file-input').click()">انتخاب فایل</button>
+      <ul id="text-file-list" class="file-list"><li>هنوز فایلی انتخاب نشده است.</li></ul>
+
+      <button id="submit-text" type="submit">ارسال برای اصلاح</button>
+    </form>
+  </div>
+</div>
+
+<!-- ───── تاریخچه فعالیت‌ها ───── -->
+<div class="panel" style="margin-top:40px">
+  <h2>تاریخچه فعالیت‌ها</h2>
+  <form action="/invoice" method="post" target="_blank">
+  {% if transcriptions %}
+    <table>
+      <thead>
+        <tr>
+          <th><input type="checkbox" onclick="toggleAll(this,'job-cbx')"></th>
+          <th>فایل</th><th>نوع</th><th>زمان</th><th>وضعیت</th><th>مدت</th><th>توکن</th><th>عملیات</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for t in transcriptions %}
+        <tr>
+          <td><input type="checkbox" name="job_ids" value="{{ t.id }}" class="job-cbx"></td>
+          <td>{{ t.display_filename or t.original_filename }}</td>
+          <td>
+            {% if '(AI)' in t.display_filename %}پیاده‌سازی و اصلاح
+            {% elif '(RAW)' in t.display_filename %}پیاده‌سازی خام
+            {% elif '(اصلاح متنی)' in t.display_filename %}اصلاح متن
+            {% else %}نامشخص{% endif %}
+          </td>
+          <td>{{ t.timestamp_local.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td>
+            {% if t.status=='completed' %}<span style="color:green">تکمیل</span>
+            {% elif t.status=='failed' %}<span style="color:red">ناموفق</span>
+            {% elif t.status=='canceled' %}<span style="color:grey">لغو</span>
+            {% else %}<span style="color:orange">در صف / پردازش</span>{% endif %}
+          </td>
+          <td>{{ t.processing_duration_seconds or '-' }}</td>
+          <td>{{ t.ai_token_usage or '-' }}</td>
+          <td>
+            {% if t.status == 'completed' %}
+              {% if t.output_filename_txt %}<a href="/download/{{ t.id }}/txt">TXT</a>{% endif %}
+              {% if t.output_filename_docx %}<a href="/download/{{ t.id }}/docx" style="margin-right:8px">DOCX</a>{% endif %}
+            {% elif t.status not in ['completed','failed','canceled'] %}
+              <button type="submit" formaction="/transcribe/{{ t.id }}/cancel" formmethod="post" class="cancel-btn">لغو</button>
+            {% else %}-{% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>تاریخچه‌ای برای نمایش وجود ندارد.</p>
+  {% endif %}
+  </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+/* --- جابه‌جایی تب‌ها --- */
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+  btn.addEventListener('click',e=>{
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    e.currentTarget.classList.add('active');
+    document.querySelectorAll('.tab-pane').forEach(p=>p.classList.remove('show'));
+    document.querySelector(e.currentTarget.dataset.target).classList.add('show');
+  });
+});
+
+/* --- پیش‌نمایش نام فایل‌ها --- */
+function previewFiles(inpID,listID){
+  const inp=document.getElementById(inpID), list=document.getElementById(listID);
+  inp.addEventListener('change',()=>{
+    list.innerHTML='';
+    if(!inp.files.length){list.innerHTML='<li>هنوز فایلی انتخاب نشده است.</li>';return;}
+    Array.from(inp.files).forEach(f=>{
+      const li=document.createElement('li');li.textContent=f.name;list.appendChild(li);
+    });
+  });
+}
+previewFiles('audio-file-input','audio-file-list');
+previewFiles('text-file-input','text-file-list');
+
+/* --- قفل دکمه پس از Submit --- */
+function lockOnSubmit(formID, btnID){
+  const form=document.getElementById(formID), btn=document.getElementById(btnID);
+  form.addEventListener('submit',()=>{btn.disabled=true;btn.textContent='در حال ارسال…';});
+}
+lockOnSubmit('audio-form','submit-audio');
+lockOnSubmit('text-form','submit-text');
+
+/* --- انتخاب همه --- */
+function toggleAll(src,cls){
+  document.querySelectorAll('.'+cls).forEach(cb=>cb.checked=src.checked);
+}
+</script>
+
+<style>
+.tabs{display:flex;gap:4px;margin-top:40px}
+.tab-btn{padding:8px 16px;font-weight:700;border:none;cursor:pointer;background:#e9ecef;border-radius:4px 4px 0 0}
+.tab-btn.active{background:#0d6efd;color:#fff}
+.tab-pane{display:none;border:1px solid #e9ecef;border-top:none;padding:24px}
+.tab-pane.show{display:block}
+
+.btn-secondary{background:#6c757d;color:#fff;border:none;padding:6px 14px;border-radius:4px;cursor:pointer}
+.file-list{margin:8px 0 16px 0;padding:0;list-style:square;font-size:.9em}
+.file-list li{margin:2px 0}
+.ai-checkbox{display:flex;align-items:center;gap:6px;margin:10px 0}
+.hint{font-size:.85em;color:#6c757d}
+</style>
+{% endblock %}

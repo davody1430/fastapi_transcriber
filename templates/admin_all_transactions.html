@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}همهٔ تراکنش‌ها{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <h2>تراکنش‌های مالی</h2>
+
+  <form method="get" class="form-inline" style="margin-bottom:1rem">
+      <input type="text" name="transaction_search" placeholder="جستجوی کاربر…" value="{{ transaction_search or '' }}">
+      <button type="submit">جستجو</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>کاربر</th><th>مبلغ</th><th>شرح</th><th>تاریخ</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for tr in transactions %}
+      <tr>
+        <td>{{ loop.index + (current_page-1)*15 }}</td>
+        <td>{{ tr.user.username }}</td>
+        <td>{{ tr.amount }}</td>
+        <td>{{ tr.description }}</td>
+        <td>{{ tr.created_at|jalali }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="text-center">هیچ موردی یافت نشد.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+
+  {% include "partials/pagination.html" %}
+</div>
+{% endblock %}

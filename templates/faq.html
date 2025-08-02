@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}سوالات متداول{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <h1 style="text-align: right; border-bottom: 2px solid #eee; padding-bottom: 15px;">سوالات متداول</h1>
+    
+    <div class="faq-container" style="padding: 20px 0;">
+        
+        <details class="faq-item">
+            <summary>این سرویس از چه فرمت‌هایی پشتیبانی می‌کند؟</summary>
+            <p>
+                برای پیاده‌سازی صوت، ما از تمام فرمت‌های رایج صوتی (MP3, WAV, M4A, OGG) و تصویری (MP4, MKV, AVI) پشتیبانی می‌کنیم. برای اصلاح متن، می‌توانید فایل‌های متنی با فرمت TXT و DOCX را بارگذاری نمایید.
+            </p>
+        </details>
+
+        <details class="faq-item">
+            <summary>هزینه خدمات چگونه محاسبه می‌شود؟</summary>
+            <p>
+                خدمت <strong>پیاده‌سازی خام</strong> کاملاً رایگان است. خدمت <strong>اصلاح متن با هوش مصنوعی</strong> (چه برای فایل صوتی و چه متنی) شامل هزینه است. هزینه بر اساس تعداد توکن‌های مصرفی توسط مدل هوش مصنوعی و قیمت هر توکن که برای حساب شما تعریف شده، محاسبه و از کیف پول شما کسر می‌گردد.
+            </p>
+        </details>
+        
+        <details class="faq-item">
+            <summary>چگونه می‌توانم کیف پول خود را شارژ کنم؟</summary>
+            <p>
+                در حال حاضر، شارژ کیف پول به صورت دستی توسط مدیر سیستم انجام می‌شود. لطفاً برای افزایش اعتبار با بخش پشتیبانی تماس بگیرید. در آینده قابلیت شارژ آنلاین اضافه خواهد شد.
+            </p>
+        </details>
+
+        <details class="faq-item">
+            <summary>سیاست شما در قبال حریم خصوصی داده‌ها چیست؟</summary>
+            <p>
+                ما به حریم خصوصی شما متعهد هستیم. محتوای فایل‌های کاربران با نقش «مشتری» به هیچ وجه توسط مدیران سیستم قابل مشاهده یا دانلود نیست. دسترسی به این داده‌ها تنها در موارد استثنایی و با حکم قضایی، تحت نظارت کامل و با ثبت گزارش دسترسی، ممکن خواهد بود. برای اطلاعات بیشتر، لطفاً صفحه <a href="/terms">قوانین و مقررات</a> ما را مطالعه کنید.
+            </p>
+        </details>
+
+        <details class="faq-item">
+            <summary>چرا گاهی اوقات برخی کلمات در پیاده‌سازی جا می‌افتند؟</summary>
+            <p>
+                دقت پیاده‌سازی به عوامل مختلفی مانند کیفیت صدای ضبط شده، میزان نویز پس‌زمینه و وضوح گفتار بستگی دارد. ما با بهینه‌سازی فایل صوتی (کاهش نویز و استانداردسازی) تلاش می‌کنیم بالاترین دقت ممکن را ارائه دهیم. برای رسیدن به متنی بی‌نقص، توصیه می‌کنیم از گزینه «اصلاح با هوش مصنوعی» استفاده نمایید.
+            </p>
+        </details>
+        
+        <details class="faq-item">
+            <summary>چگونه از وب‌سرویس استفاده کنم؟</summary>
+            <p>
+                اگر توسعه‌دهنده هستید و می‌خواهید پیاده‌سازی یا اصلاح متن را از طریق وب‌سرویس انجام دهید، ما یک API ساده و مستند ارائه کرده‌ایم.<br>
+                مستندات کامل در صفحه <a href="/api-docs" target="_blank">/api-docs</a> در دسترس است.
+            </p>
+            <p>
+                برای استفاده از وب‌سرویس، مراحل زیر را دنبال کنید:
+                <ol style="margin-top:10px;padding-right:20px">
+                    <li>از مدیر سیستم یک <strong>API Key</strong> معتبر دریافت کنید.</li>
+                    <li>در درخواست‌های HTTP خود، این کلید را در هدر <code>Authorization</code> با فرمت زیر ارسال کنید:
+                        <pre style="background:#f8f8f8;padding:10px;border:1px solid #ccc;direction:ltr">Authorization: Bearer YOUR_API_KEY</pre>
+                    </li>
+                    <li>برای ارسال فایل صوتی یا متنی، از روش POST و مسیر مناسب (مثلاً <code>/api/transcribe</code> یا <code>/api/improve</code>) استفاده کنید.</li>
+                    <li>پاسخ سرویس، شامل وضعیت پردازش و در صورت موفقیت، آدرس فایل خروجی خواهد بود.</li>
+                </ol>
+            </p>
+            <p>
+                اگر به راهنمایی بیشتر نیاز دارید، لطفاً با پشتیبانی تماس بگیرید.
+            </p>
+        </details>
+
+    </div>
+</div>
+
+<style>
+    .faq-item {
+        border-bottom: 1px solid var(--border-color);
+        margin-bottom: 15px;
+    }
+    .faq-item summary {
+        font-size: 1.2em;
+        font-weight: bold;
+        padding: 15px 0;
+        cursor: pointer;
+        position: relative;
+        padding-right: 30px;
+    }
+    .faq-item summary::before {
+        content: '+';
+        position: absolute;
+        right: 0;
+        font-size: 1.5em;
+        color: var(--header-border-color);
+    }
+    .faq-item[open] summary::before {
+        content: '−';
+    }
+    .faq-item p {
+        padding: 0 30px 20px 0;
+        opacity: 0.9;
+    }
+</style>
+{% endblock %}

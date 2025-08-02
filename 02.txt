@@ -1,0 +1,595 @@
+models.py
+# -*- coding: utf-8 -*-
+from __future__ import annotations
+
+import enum
+from datetime import datetime, date
+
+import jdatetime
+import pytz
+from sqlalchemy import (
+    Column,
+    Date,
+    DateTime,
+    Enum,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    Boolean,
+)
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import relationship
+
+from .database import Base
+
+
+class Role(str, enum.Enum):
+    admin = "admin"
+    employee = "employee"
+    customer = "customer"
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+
+    role = Column(Enum(Role), nullable=False, default=Role.customer)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    file_limit = Column(Integer, default=5)
+    daily_transcription_count = Column(Integer, default=0)
+    last_transcription_date = Column(Date, nullable=True)
+
+    wallet_balance = Column(Float, default=0.0)
+    token_price = Column(Float, default=10.0)
+
+    is_active = Column(Boolean, default=True)
+
+    transcriptions = relationship("TranscriptionFile", back_populates="owner")
+    transactions   = relationship("Transaction",        back_populates="user")
+    api_keys       = relationship("APIKey",             back_populates="owner")
+
+
+class TranscriptionFile(Base):
+    __tablename__ = "transcriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+
+    original_filename = Column(String, nullable=False)
+    # ← ستون جدید برای نام نمایشی در داشبورد
+    display_filename  = Column(String, nullable=False)
+
+    language = Column(String, nullable=False)
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    status    = Column(String, default="pending")   # pending | queued | processing | completed | failed | canceled
+
+    celery_task_id = Column(String(50), nullable=True, index=True)
+
+    raw_result_text   = Column(Text, nullable=True)
+    ai_result_text    = Column(Text, nullable=True)
+    final_result_text = Column(Text, nullable=True)
+
+    processing_duration_seconds = Column(Integer, nullable=True)
+    ai_token_usage              = Column(Integer, nullable=True)
+
+    output_filename_txt  = Column(String, nullable=True)
+    output_filename_docx = Column(String, nullable=True)
+
+    owner = relationship("User", back_populates="transcriptions")
+
+    @hybrid_property
+    def timestamp_local(self):
+        utc_ts   = self.timestamp.replace(tzinfo=pytz.utc)
+        local_tz = pytz.timezone("Asia/Tehran")
+        return utc_ts.astimezone(local_tz)
+
+    @hybrid_property
+    def user(self):
+        return self.owner
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    amount = Column(Float, nullable=False)
+    description = Column(String, nullable=False)
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    token_price_at_transaction = Column(Float, nullable=True)
+
+    user = relationship("User", back_populates="transactions")
+
+    @hybrid_property
+    def timestamp_shamsi(self):
+        utc_ts   = self.timestamp.replace(tzinfo=pytz.utc)
+        local_tz = pytz.timezone("Asia/Tehran")
+        local_time = utc_ts.astimezone(local_tz)
+        return jdatetime.datetime.fromgregorian(datetime=local_time)
+
+
+class APIKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(Integer, primary_key=True, index=True)
+    key = Column(String, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+
+    is_active = Column(Boolean, default=True)
+
+    total_calls       = Column(Integer, default=0)
+    total_tokens_used = Column(Integer, default=0)
+
+    owner = relationship("User", back_populates="api_keys")
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key   = Column(String, primary_key=True)
+    value = Column(String, nullable=False)
+
+
+
+
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from datetime import datetime
+from .models import Role
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+
+class UserBase(BaseModel):
+    username: str
+
+class UserCreate(UserBase):
+    password: str
+    role: Role
+    file_limit: int
+    wallet_balance: float
+    token_price: float
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = None
+    file_limit: Optional[int] = None
+
+class User(BaseModel):
+    id: int
+    username: str
+    role: Role
+    file_limit: int
+    wallet_balance: float
+    token_price: float
+
+    class Config:
+        from_attributes = True
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6)
+
+class TranscriptionFile(BaseModel):
+    id: int
+    user_id: int
+    original_filename: str
+    language: str
+    timestamp: datetime
+    status: str
+    output_filename: Optional[str] = None
+    processing_duration_seconds: Optional[int] = None
+    ai_token_usage: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+class Transaction(BaseModel):
+    id: int
+    amount: float
+    description: str
+    timestamp: datetime
+    token_price_at_transaction: Optional[float] = None
+
+    class Config:
+        from_attributes = True
+
+
+
+from pydantic import BaseModel, HttpUrl, Field
+from typing import Literal, Optional
+
+
+class ExternalJobCreate(BaseModel):
+    file_url: HttpUrl = Field(..., example="https://cdn.site.com/audio/abc.mp3")
+    language: str = Field("fa")
+    mode: Literal["transcribe_only", "transcribe_and_fix"] = "transcribe_only"
+    callback_url: Optional[HttpUrl] = None
+
+
+class JobQueuedResp(BaseModel):
+    job_id: str
+    status: Literal["queued"]
+    estimated_cost: float
+
+
+class JobStatusResp(BaseModel):
+    job_id: str
+    status: str
+    mode: str
+    raw_text: Optional[str]
+    ai_text: Optional[str]
+    charged: Optional[float]
+
+    class Config:
+        orm_mode = True
+
+
+# app/tasks.py
+"""
+وظایف صف Celery برای
+❶ پیاده‌سازی صوت
+❷ اصلاح متن
+❸ پردازش وب‌سرویس خارجی
+
+تمام توابع این فایل با @celery_app.task علامت‌گذاری شده‌اند و
+نشست دیتابیس را   «درون»  خود باز و بسته می‌کنند.
+"""
+
+from __future__ import annotations
+
+import os
+import time
+import concurrent.futures
+from pathlib import Path
+from typing import Any, Dict, List, Tuple, Optional
+
+from sqlalchemy.orm import Session
+
+from .celery_app import celery_app
+from .database import SessionLocal
+from . import crud, models
+from .services.ai_services import correct_text_with_ai
+from .services.audio_processing import transcribe_audio_google
+from .services.text_processing import extract_text_from_docx, split_text_into_chunks
+
+
+# ────────────────────────── Helpers
+def _to_clean_string(raw: Any) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, list):
+        parts = []
+        for item in raw:
+            parts.append(str(item.get("text", item)) if isinstance(item, dict) else str(item))
+        return "\n".join(p for p in parts if p).strip()
+    return str(raw).strip()
+
+
+def _correct_single_text_chunk(task_data: Tuple[int, str, float]):
+    idx, chunk, price = task_data
+    corrected, used = correct_text_with_ai(chunk, price)
+    return idx, corrected, used
+
+
+# ────────────────────────── 1) صوت
+@celery_app.task(bind=True, name="audio_transcribe_task")
+def background_audio_task(
+    self,
+    record_id: int,
+    file_path: str,
+    language: str,
+    process_ai: bool,
+    original_filename: str,
+):
+    db: Session = SessionLocal()
+    start_time = time.time()
+
+    try:
+        record = db.query(models.TranscriptionFile).get(record_id)
+        if not record or record.status == "canceled":
+            return
+
+        user = record.owner
+        if process_ai and user.wallet_balance < (200 * user.token_price):
+            raise ValueError("موجودی برای اصلاح با هوش مصنوعی کافی نیست.")
+
+        crud.update_transcription_status(db, record_id, "processing")
+
+        # ➊ پیاده‌سازی صوت
+        raw_segments = transcribe_audio_google(file_path, language)
+        raw_text_str = _to_clean_string(raw_segments)
+        if not raw_text_str or "[خطا" in raw_text_str:
+            raise ValueError("پیاده‌سازی صوت ناموفق بود.")
+        record.raw_result_text = raw_text_str
+
+        final_text, token_usage = raw_text_str, 0
+
+        # ➋ گزینهٔ اصلاح AI
+        if process_ai:
+            corrected_text, token_usage = correct_text_with_ai(raw_text_str, user.token_price)
+            if "[خطا" in corrected_text:
+                raise ValueError("اصلاح با هوش مصنوعی ناموفق بود.")
+
+            final_text = corrected_text
+            record.ai_result_text = corrected_text
+            record.ai_token_usage = token_usage
+
+            crud.debit_from_wallet(
+                db,
+                user=user,
+                cost=token_usage * user.token_price,
+                description=f"هزینه اصلاح فایل: {original_filename}",
+            )
+
+        # ➌ اتمام و خروجی‌ها
+        crud.finalize_job(db, record, final_text, int(time.time() - start_time))
+
+    except Exception as e:
+        print(f"[Celery-Audio] Record {record_id} failed: {e}")
+        db.rollback()
+        crud.update_transcription_status(db, record_id, "failed")
+        raise
+    finally:
+        db.commit()
+        db.close()
+
+
+# ────────────────────────── 2) اصلاح متن
+@celery_app.task(bind=True, name="text_correct_task")
+def background_text_correction_task(self, record_id: int, file_path: str):
+    db: Session = SessionLocal()
+    start_time = time.time()
+
+    try:
+        for _ in range(3):
+            if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+                break
+            time.sleep(1)
+        else:
+            raise ValueError("فایل برای پردازش در دسترس نیست.")
+
+        record = db.query(models.TranscriptionFile).get(record_id)
+        if not record or record.status == "canceled":
+            return
+
+        user = record.owner
+        crud.update_transcription_status(db, record_id, "processing")
+
+        # ➊ خواندن متن
+        if file_path.endswith(".txt"):
+            original_text = Path(file_path).read_text(encoding="utf-8")
+        elif file_path.endswith(".docx"):
+            original_text = extract_text_from_docx(file_path)
+        else:
+            original_text = ""
+        if not original_text:
+            raise ValueError("متن استخراج نشد.")
+
+        # ➋ تقسیم و پردازش موازی
+        chunks = list(split_text_into_chunks(original_text))
+        tasks = [(i, c, user.token_price) for i, c in enumerate(chunks)]
+
+        corrected: Dict[int, str] = {}
+        total_tokens = 0
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            for idx, txt, used in executor.map(_correct_single_text_chunk, tasks):
+                if "[خطا" in txt:
+                    raise ValueError(f"AI failure at chunk {idx}")
+                corrected[idx] = txt
+                total_tokens += used
+
+        final_text = "\n".join(corrected[i] for i in sorted(corrected))
+
+        crud.debit_from_wallet(
+            db,
+            user=user,
+            cost=total_tokens * user.token_price,
+            description=f"هزینه اصلاح فایل متنی: {record.original_filename}",
+        )
+        record.ai_token_usage = total_tokens
+
+        crud.finalize_job(db, record, final_text, int(time.time() - start_time))
+
+    except Exception as e:
+        print(f"[Celery-Text] Record {record_id} failed: {e}")
+        db.rollback()
+        crud.update_transcription_status(db, record_id, "failed")
+        raise
+    finally:
+        db.commit()
+        db.close()
+
+
+# ────────────────────────── 3) وب‌سرویس خارجی
+@celery_app.task(bind=True, name="external_job_task")
+def enqueue_external_job(
+    self,
+    job_id: int,
+    file_url: str,
+    language: str,
+    mode: str,
+    callback_url: Optional[str] = None,
+):
+    """
+    برای سادگی همان منطق دو وظیفهٔ اصلی را بر اساس mode فراخوانی می‌کند.
+    در پروژهٔ واقعی احتمالاً دانلود فایل و POST نتیجه به callback_url هم لازم است.
+    """
+    db: Session = SessionLocal()
+    try:
+        record = db.query(models.TranscriptionFile).get(job_id)
+        if not record:
+            raise ValueError("Job not found")
+
+        # دانلود فایل به مسیر uploads/<job_id>.<ext>
+        local_path = Path("uploads") / f"ext_{job_id}_{Path(file_url).name}"
+        import requests, shutil
+
+        with requests.get(file_url, stream=True, timeout=60) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                shutil.copyfileobj(r.raw, f)
+
+        if mode == "transcribe_only":
+            background_audio_task(
+                record_id=job_id,
+                file_path=str(local_path),
+                language=language,
+                process_ai=False,
+                original_filename=local_path.name,
+            )
+        else:
+            background_audio_task(
+                record_id=job_id,
+                file_path=str(local_path),
+                language=language,
+                process_ai=True,
+                original_filename=local_path.name,
+            )
+
+        # TODO: اگر callback_url تنظیم شده بود، نتیجه را ارسال کن.
+
+    except Exception as e:
+        print(f"[Celery-External] Job {job_id} failed: {e}")
+        raise
+    finally:
+        db.close()
+
+
+
+# app/templating.py
+# ساخت و پیکربندی شیء Jinja2Templates مرکزی
+
+from pathlib import Path
+from fastapi.templating import Jinja2Templates
+import jdatetime
+
+BASE_DIR   = Path(__file__).resolve().parent.parent   # fastapi_transcriber/
+TEMPLATES_DIR = BASE_DIR / "templates"
+
+templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
+
+# اضافه کردن jdatetime به محیط Jinja2 تا در همهٔ قالب‌ها در دسترس باشد
+templates.env.globals["jdatetime"] = jdatetime
+
+
+routes/admin.py
+# -*- coding: utf-8 -*-
+"""
+تمام روت‌های پنل ادمین (داشبورد + تب-ها)
+"""
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from sqlalchemy.orm import Session
+from starlette.status import HTTP_303_SEE_OTHER
+
+from app import crud, models, schemas
+from app.dependencies import get_db, get_current_admin
+from fastapi.templating import Jinja2Templates
+
+router = APIRouter(prefix="/admin", tags=["admin"])
+templates = Jinja2Templates(directory="templates")
+
+# -----------------------------------------------------------
+#  داشبورد اصلی (دارای تب‌ها)
+# -----------------------------------------------------------
+@router.get("/dashboard", response_class=HTMLResponse)
+def admin_dashboard(
+    request: Request,
+    _: models.User = Depends(get_current_admin),
+):
+    """صفحه اصلی پنل مدیریت با تب‌ها"""
+    return templates.TemplateResponse("admin/dashboard.html", {"request": request})
+
+
+# -----------------------------------------------------------
+#  تب کاربران
+# -----------------------------------------------------------
+@router.get(
+    "/users/partial",
+    response_class=HTMLResponse,
+    name="admin_users_partial",
+)
+def users_partial(
+    request: Request,
+    db: Session = Depends(get_db),
+    _: models.User = Depends(get_current_admin),
+):
+    users = crud.get_users(db)
+    return templates.TemplateResponse(
+        "admin/partials/users.html",
+        {"request": request, "users": users},
+    )
+
+
+@router.post(
+    "/users/create",
+    response_class=HTMLResponse,
+    name="admin_users_create",
+)
+def users_create(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+    role: str = Form(...),
+    file_limit: int = Form(5),
+    token_price: float = Form(10.0),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(get_current_admin),
+):
+    if crud.get_user_by_username(db, username):
+        raise HTTPException(400, "نام کاربری تکراری است.")
+    crud.create_user(
+        db,
+        schemas.UserCreate(
+            username=username,
+            password=password,
+            role=role,
+            file_limit=file_limit,
+            wallet_balance=0,
+            token_price=token_price,
+        ),
+    )
+    # پس از ایجاد، لیستِ به‌روزشده را به همان تب برمی‌گردانیم
+    return RedirectResponse(
+        url=request.url_for("admin_users_partial"), status_code=HTTP_303_SEE_OTHER
+    )
+
+
+@router.post(
+    "/users/{user_id}/update",
+    response_class=HTMLResponse,
+    name="admin_users_update",
+)
+def users_update(
+    request: Request,
+    user_id: int,
+    username: str = Form(...),
+    file_limit: int = Form(...),
+    token_price: float = Form(...),
+    db: Session = Depends(get_db),
+    _: models.User = Depends(get_current_admin),
+):
+    db_user = crud.get_user(db, user_id)
+    if not db_user:
+        raise HTTPException(404, "کاربر یافت نشد.")
+    crud.update_user_details(db, db_user, username, file_limit, token_price)
+    return RedirectResponse(
+        url=request.url_for("admin_users_partial"), status_code=HTTP_303_SEE_OTHER
+    )

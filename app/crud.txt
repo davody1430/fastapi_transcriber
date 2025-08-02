@@ -1,0 +1,277 @@
+# app/crud/users.py
+# مدیریت عملیات CRUD کاربران
+from sqlalchemy.orm import Session
+from app import models, auth, schemas
+
+# دریافت یک کاربر با ID
+def get_user(db: Session, user_id: int) -> models.User | None:
+    return db.query(models.User).filter(models.User.id == user_id).first()
+
+# دریافت کاربر بر اساس username
+def get_user_by_username(db: Session, username: str) -> models.User | None:
+    return db.query(models.User).filter(models.User.username == username).first()
+
+# دریافت لیستی از کاربران با قابلیت جستجو و صفحه‌بندی
+def get_users(db: Session, username_filter: str | None = None, skip: int = 0, limit: int = 100):
+    q = db.query(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return q.order_by(models.User.id.desc()).offset(skip).limit(limit).all()
+
+# ایجاد کاربر جدید
+def create_user(db: Session, user_create: schemas.UserCreate) -> models.User:
+    hashed_pw = auth.get_password_hash(user_create.password)
+    db_user = models.User(
+        username=user_create.username,
+        hashed_password=hashed_pw,
+        role=user_create.role,
+        file_limit=user_create.file_limit,
+        wallet_balance=user_create.wallet_balance,
+        token_price=user_create.token_price,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+# به‌روزرسانی رمز عبور کاربر
+def update_user_password(db: Session, user: models.User, new_plain_pw: str):
+    user.hashed_password = auth.get_password_hash(new_plain_pw)
+    db.commit()
+
+# به‌روزرسانی جزئیات کاربر
+def update_user_details(db: Session, user_to_update: models.User, username: str, file_limit: int, token_price: float):
+    user_to_update.username = username
+    user_to_update.file_limit = file_limit
+    user_to_update.token_price = token_price
+    db.commit()
+    db.refresh(user_to_update)
+
+
+# app/crud/transcriptions.py
+import os
+import docx
+from sqlalchemy.orm import Session
+from app import models
+from app.utils.time import now_tehran  # تغییر اینجا
+
+UPLOAD_DIR = "uploads"
+
+def create_transcription_record(db: Session, filename: str, user_id: int, lang: str, original_filename: str | None = None):
+    rec = models.TranscriptionFile(
+        user_id=user_id,
+        original_filename=original_filename or filename,
+        display_filename=filename,
+        language=lang,
+        status="queued",
+        timestamp=now_tehran(),  # تغییر اینجا
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    return rec
+
+def get_user_transcriptions(db: Session, user_id: int, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.TranscriptionFile)
+        .filter(models.TranscriptionFile.user_id == user_id)
+        .order_by(models.TranscriptionFile.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+def get_user_transcriptions_count(db: Session, user_id: int) -> int:
+    return db.query(models.TranscriptionFile).filter(models.TranscriptionFile.user_id == user_id).count()
+
+def set_task_id(db: Session, record_id: int, task_id: str):
+    rec = db.query(models.TranscriptionFile).get(record_id)
+    if rec:
+        rec.celery_task_id = task_id
+        db.commit()
+
+def update_transcription_status(db: Session, record_id: int, status: str):
+    rec = db.query(models.TranscriptionFile).get(record_id)
+    if rec:
+        rec.status = status
+        if status in ("completed", "failed", "canceled"):
+            rec.finished_at = now_tehran()  # تغییر اینجا
+        db.commit()
+
+def finalize_job(db: Session, record: models.TranscriptionFile, final_text: str, duration: int):
+    record.status = "completed"
+    record.final_result_text = final_text
+    record.processing_duration_seconds = duration
+
+    base = f"{record.id}_{record.original_filename.rsplit('.', 1)[0]}"
+    txt_name = f"{base}.txt"
+    with open(os.path.join(UPLOAD_DIR, txt_name), "w", encoding="utf-8") as f:
+        f.write(final_text)
+    record.output_filename_txt = txt_name
+
+    doc = docx.Document()
+    doc.add_paragraph(final_text)
+    docx_name = f"{base}.docx"
+    doc.save(os.path.join(UPLOAD_DIR, docx_name))
+    record.output_filename_docx = docx_name
+
+    db.commit()
+
+def get_job(db: Session, job_id: int, owner: models.User):
+    q = db.query(models.TranscriptionFile).filter_by(id=job_id)
+    if owner.role != models.Role.admin:
+        q = q.filter_by(user_id=owner.id)
+    return q.first()
+
+
+# app/crud/transactions.py
+from sqlalchemy.orm import Session
+from app import models
+from app.utils.time import now_tehran  # تغییر اینجا
+
+def create_transaction(db: Session, user_id: int, amount: float, description: str, token_price: float | None = None):
+    tx = models.Transaction(
+        user_id=user_id,
+        amount=amount,
+        description=description,
+        token_price_at_transaction=token_price,
+        timestamp=now_tehran(),  # تغییر اینجا
+    )
+    db.add(tx)
+    return tx
+
+def adjust_user_balance(db: Session, user: models.User, amount: float, description: str):
+    if amount == 0:
+        return
+    user.wallet_balance += amount
+    create_transaction(db, user.id, amount, description, user.token_price)
+    db.commit()
+    db.refresh(user)
+
+def debit_from_wallet(db: Session, user: models.User, cost: float, description: str):
+    db.refresh(user)
+    if user.wallet_balance < cost:
+        raise ValueError("موجودی ناکافی برای این عملیات")
+    user.wallet_balance -= cost
+    create_transaction(db, user.id, -cost, description, user.token_price)
+    db.commit()
+    db.refresh(user)
+
+
+# app/crud/api_keys.py
+# مدیریت کلیدهای API
+import uuid
+from sqlalchemy.orm import Session
+from app import models
+
+def _generate_api_key() -> str:
+    return uuid.uuid4().hex + uuid.uuid4().hex
+
+def create_api_key(db: Session, user: models.User):
+    key = _generate_api_key()
+    api_key = models.APIKey(key=key, owner=user)
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+    return api_key
+
+def deactivate_api_key(db: Session, api_key: models.APIKey):
+    api_key.is_active = False
+    db.commit()
+
+
+# app/crud/settings.py
+# مدیریت تنظیمات کلی برنامه
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import NoResultFound
+from app import models
+
+# دریافت تنظیمات براساس کلید
+def get_setting(db: Session, key: str):
+    return db.query(models.Setting).filter(models.Setting.key == key).first()
+
+# ایجاد یا به‌روزرسانی تنظیمات
+def upsert_setting(db: Session, key: str, value: str):
+    try:
+        setting = db.query(models.Setting).filter(models.Setting.key == key).one()
+        setting.value = value
+    except NoResultFound:
+        setting = models.Setting(key=key, value=value)
+        db.add(setting)
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+
+__init__.py
+# Import users functions
+from .users import (
+    get_user,
+    get_user_by_username,
+    get_users,
+    create_user,
+    update_user_password,
+    update_user_details
+)
+
+# Import transactions functions
+from .transactions import (
+    create_transaction,
+    adjust_user_balance,
+    debit_from_wallet
+)
+
+# Import transcriptions functions
+from .transcriptions import (
+    create_transcription_record,
+    get_user_transcriptions,
+    get_user_transcriptions_count,
+    set_task_id,
+    update_transcription_status,
+    finalize_job,
+    get_job
+)
+
+# Import settings functions
+from .settings import (
+    get_setting,
+    upsert_setting
+)
+
+# Import api_keys functions
+from .api_keys import (
+    create_api_key,
+    deactivate_api_key
+)
+
+__all__ = [
+    # Users
+    'get_user',
+    'get_user_by_username',
+    'get_users',
+    'create_user',
+    'update_user_password',
+    'update_user_details',
+
+    # Transactions
+    'create_transaction',
+    'adjust_user_balance',
+    'debit_from_wallet',
+
+    # Transcriptions
+    'create_transcription_record',
+    'get_user_transcriptions',
+    'get_user_transcriptions_count',
+    'set_task_id',
+    'update_transcription_status',
+    'finalize_job',
+    'get_job',
+
+    # Settings
+    'get_setting',
+    'upsert_setting',
+
+    # API Keys
+    'create_api_key',
+    'deactivate_api_key'
+]

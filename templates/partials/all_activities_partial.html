@@ -1,0 +1,31 @@
+<!-- ======= فعالیت‌ها ======= -->
+<h2 class="text-center mb-1">فعالیت‌ها</h2>
+
+{% if activities %}
+<table data-datatables>
+  <thead>
+    <tr>
+      <th>#</th><th>کاربر</th><th>فایل</th><th>نوع</th><th>زمان</th><th>وضعیت</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for f in activities %}
+    <tr>
+      <td>{{ loop.index }}</td>
+      <td>{{ f.owner.username }}</td>
+      <td>{{ f.original_filename }}</td>
+      <td>
+        {% if '(AI)' in f.original_filename %}پیاده‌سازی و اصلاح
+        {% elif '(RAW)' in f.original_filename %}پیاده‌سازی خام
+        {% elif '(اصلاح متنی)' in f.original_filename %}اصلاح متن
+        {% else %}نامشخص{% endif %}
+      </td>
+      <td>{{ f.timestamp_local.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{{ f.status }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="text-center">فعالیتی ثبت نشده است.</p>
+{% endif %}

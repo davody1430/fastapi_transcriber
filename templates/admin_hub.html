@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}پنل مدیریت{% endblock %}
+
+{% block content %}
+<h1 style="text-align:center;margin-bottom:5px">پنل مدیریت</h1>
+<p style="text-align:center;margin:-10px 0 25px">
+    کاربر گرامی {{ user.username }}، خوش آمدید.
+</p>
+
+<!-- نوار تب‌ها -->
+<div class="tabs" id="admin-tabs">
+    <button class="tab-btn active"
+            data-tab="users"
+            data-url="/admin/manage-users?partial=1">کاربران</button>
+    <button class="tab-btn"
+            data-tab="activities"
+            data-url="/admin/all-activities?partial=1">فعالیت‌ها</button>
+    <button class="tab-btn"
+            data-tab="transactions"
+            data-url="/admin/all-transactions?partial=1">تراکنش‌ها</button>
+    <button class="tab-btn"
+            data-tab="content"
+            data-url="/admin/content?partial=1">محتوا</button>
+</div>
+
+<!-- محوطهٔ محتوای پویا -->
+<div id="tab-container" class="panel">
+    <div id="loader" class="text-center" style="padding:50px">در حال بارگذاری…</div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  <script src="/static/js/admin-tabs.js"></script>
+{% endblock %}

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}مدیریت محتوا{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <h2>مدیریت صفحات محتوایی</h2>
+
+  <table>
+    <thead>
+      <tr><th>کلید صفحه</th><th>عنوان</th><th>عملیات</th></tr>
+    </thead>
+    <tbody>
+    {% for key,label in pages.items() %}
+      <tr>
+        <td>{{ key }}</td>
+        <td>{{ label }}</td>
+        <td><a href="/admin/content/edit/{{ key }}" class="btn">ویرایش</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,209 @@
+Folder PATH listing
+Volume serial number is 4EC6-B3A8
+C:.
+│   .env
+│   .env.example
+│   01.txt
+│   01create_admin.py
+│   01transcriber.db
+│   02.txt
+│   alembic.ini
+│   create_admin.py
+│   fix_status.py
+│   reset_password.py
+│   structure.txt
+│   transcriber.db
+│   
+├───alembic
+│   │   env.py
+│   │   README
+│   │   script.py.mako
+│   │   
+│   └───versions
+│           1d752a821f3a_initial_tables.py
+│           20250726_add_celery_task_id_column.py
+│           20250726_add_display_filename.py
+│           20250726_add_is_active_column.py
+│           a325d151ad71_add_created_at_to_users.py
+│           eddd757e9a71_merge_heads.py
+│           
+├───app
+│   │   app-utils-time.txt
+│   │   auth.py
+│   │   auth_api.py
+│   │   celery_app.py
+│   │   core.txt
+│   │   crud.py
+│   │   crud.txt
+│   │   database.py
+│   │   dependencies.py
+│   │   main.py
+│   │   messages.py
+│   │   models.py
+│   │   New Text Document (2).txt
+│   │   New Text Document.txt
+│   │   routers.txt
+│   │   schemas.py
+│   │   schemas_external.py
+│   │   services.txt
+│   │   tasks.txt
+│   │   templating.py
+│   │   __init__.py
+│   │   
+│   ├───core
+│   │   │   config.py
+│   │   │   file_manager.py
+│   │   │   logger.py
+│   │   │   
+│   │   └───__pycache__
+│   │           config.cpython-313.pyc
+│   │           logger.cpython-313.pyc
+│   │           
+│   ├───crud
+│   │   │   api_keys.py
+│   │   │   settings.py
+│   │   │   transactions.py
+│   │   │   transcriptions.py
+│   │   │   users.py
+│   │   │   __init__.py
+│   │   │   
+│   │   └───__pycache__
+│   │           api_keys.cpython-313.pyc
+│   │           settings.cpython-313.pyc
+│   │           transactions.cpython-313.pyc
+│   │           transcriptions.cpython-313.pyc
+│   │           users.cpython-313.pyc
+│   │           __init__.cpython-313.pyc
+│   │           
+│   ├───routers
+│   │   │   admin.py
+│   │   │   auth.py
+│   │   │   external_api.py
+│   │   │   jobs.py
+│   │   │   user.py
+│   │   │   
+│   │   └───__pycache__
+│   │           admin.cpython-313.pyc
+│   │           auth.cpython-313.pyc
+│   │           jobs.cpython-313.pyc
+│   │           user.cpython-313.pyc
+│   │           
+│   ├───services
+│   │   │   ai_services.py
+│   │   │   audio_processing.py
+│   │   │   text_processing.py
+│   │   │   webhook.py
+│   │   │   __init__.py
+│   │   │   
+│   │   └───__pycache__
+│   │           ai_services.cpython-313.pyc
+│   │           audio_processing.cpython-313.pyc
+│   │           text_processing.cpython-313.pyc
+│   │           __init__.cpython-313.pyc
+│   │           
+│   ├───static
+│   ├───tasks
+│   │   │   audio.py
+│   │   │   audio_tasks.py
+│   │   │   external_tasks.py
+│   │   │   helpers.py
+│   │   │   parallel_audio.py
+│   │   │   text_tasks.py
+│   │   │   
+│   │   └───__pycache__
+│   │           audio.cpython-313.pyc
+│   │           audio_tasks.cpython-313.pyc
+│   │           external_tasks.cpython-313.pyc
+│   │           helpers.cpython-313.pyc
+│   │           parallel_audio.cpython-313.pyc
+│   │           text_tasks.cpython-313.pyc
+│   │           
+│   ├───uploads
+│   ├───utils
+│   │   │   time.py
+│   │   │   
+│   │   └───__pycache__
+│   │           time.cpython-313.pyc
+│   │           
+│   └───__pycache__
+│           auth.cpython-313.pyc
+│           celery_app.cpython-313.pyc
+│           database.cpython-313.pyc
+│           dependencies.cpython-313.pyc
+│           main.cpython-313.pyc
+│           messages.cpython-313.pyc
+│           models.cpython-313.pyc
+│           schemas.cpython-313.pyc
+│           templating.cpython-313.pyc
+│           __init__.cpython-313.pyc
+│           
+├───logs
+│       app.log
+│       
+├───routes
+│       admin.py
+│       
+├───static
+│   │   style.css
+│   │   
+│   └───js
+│           admin-tabs.js
+│           
+├───templates
+│   │   about.html
+│   │   admin_all_activities.html
+│   │   admin_all_transactions.html
+│   │   admin_content_management.html
+│   │   admin_edit_content.html
+│   │   admin_hub.html
+│   │   admin_manage_users.html
+│   │   admin_transcribe.html
+│   │   admin_user_profile.html
+│   │   admin_user_transactions.html
+│   │   admin_user_transcriptions.html
+│   │   api_docs.html
+│   │   base.html
+│   │   change_password.html
+│   │   faq.html
+│   │   footer.html
+│   │   header.html
+│   │   invoice.html
+│   │   login.html
+│   │   pricing.html
+│   │   public_page.html
+│   │   terms.html
+│   │   transaction_history.html
+│   │   user_dashboard.html
+│   │   
+│   ├───admin
+│   │   │   hub.html
+│   │   │   
+│   │   └───tabs
+│   │           activities.html
+│   │           content.html
+│   │           transactions.html
+│   │           users.html
+│   │           
+│   └───partials
+│           all_activities_partial.html
+│           all_transactions_partial.html
+│           content_mgt_partial.html
+│           manage_users_partial.html
+│           
+├───tests
+│       conftest.py
+│       test_auth.py
+│       test_services.py
+│       
+└───uploads
+    │   mp3
+    │   mp3.part000.wav
+    │   mp3.part001.wav
+    │   mp3.part002.wav
+    │   mp3.part003.wav
+    │   mp3.part004.wav
+    │   mp3.part005.wav
+    │   mp3.part006.wav
+    │   mp3.part007.wav
+    │   
+    └───chunks

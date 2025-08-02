@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+
+{% block title %}{{ page_title }} - دستیار صوت و متن{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <!-- محتوای HTML که از دیتابیس خوانده شده، در اینجا نمایش داده می‌شود -->
+    {{ page_content|safe }}
+</div>
+{% endblock %}

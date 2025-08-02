@@ -1,0 +1,705 @@
+auth.py
+from passlib.context import CryptContext
+from datetime import datetime, timedelta
+from jose import JWTError, jwt
+from typing import Optional
+
+# تنظیمات امنیتی
+SECRET_KEY = "a_very_secret_key_for_jwt" # این کلید را در محیط واقعی تغییر دهید
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def verify_password(plain_password, hashed_password):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password):
+    return pwd_context.hash(password)
+
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+auth_api.py
+from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy.orm import Session
+from .database import get_db
+from .models import APIKey
+
+
+def get_current_service_user(
+    db: Session = Depends(get_db),
+    authorization: str = Header(None, alias="Authorization"),
+):
+    """
+    دریافت Bearer <token> و تحویل یوزر سرویس
+    """
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing token")
+    token = authorization.split(" ", 1)[1].strip()
+
+    api_key = (
+        db.query(APIKey)
+        .filter(APIKey.key == token, APIKey.is_active.is_(True))
+        .first()
+    )
+    if not api_key:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Invalid token")
+
+    return api_key.owner  # -> models.User
+
+
+
+# app/celery_app.py
+from celery import Celery
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# مثال: redis روی پورت 6379 لوکال
+broker_url  = os.getenv("CELERY_BROKER_URL",  "redis://localhost:6379/0")
+result_url  = os.getenv("CELERY_RESULT_BACKEND", "redis://localhost:6379/1")
+
+celery_app = Celery(
+    "dastyaresot",
+    broker=broker_url,
+    backend=result_url,
+    include=["app.tasks"],   # ماژول حاوی وظایف
+)
+
+# گزینهٔ پیش‌فرض زمان‌بندی و… (در صورت نیاز قابل گسترش است)
+celery_app.conf.update(
+    task_track_started=True,
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    timezone="Asia/Tehran",
+)
+
+
+
+# app/crud.py
+# -*- coding: utf-8 -*-
+"""
+CRUD helpers for DastYar‑e SOT
+آخرین به‌روزرسانی: ۱۴۰۴/۰۵/۰۴
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from datetime import date, datetime, timezone, timedelta
+from typing import List, Optional
+
+import docx
+from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import Session
+
+from . import models, auth
+
+
+# =============================================================================
+# 🕒 Helper
+# =============================================================================
+def _now_tehran() -> datetime:
+    return datetime.now(timezone(timedelta(hours=3, minutes=30)))
+
+
+# =============================================================================
+# 🟢  کاربران
+# =============================================================================
+def get_user(db: Session, user_id: int) -> models.User | None:
+    return db.query(models.User).filter(models.User.id == user_id).first()
+
+
+def get_user_by_username(db: Session, username: str) -> models.User | None:
+    return db.query(models.User).filter(models.User.username == username).first()
+
+
+def get_users(
+    db: Session,
+    username_filter: str | None = None,
+    skip: int = 0,
+    limit: int = 100,
+):
+    q = db.query(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return q.order_by(models.User.id.desc()).offset(skip).limit(limit).all()
+
+
+def create_user(db: Session, user_create) -> models.User:
+    hashed_pw = auth.get_password_hash(user_create.password)
+    db_user = models.User(
+        username=user_create.username,
+        hashed_password=hashed_pw,
+        role=user_create.role,
+        file_limit=user_create.file_limit,
+        wallet_balance=user_create.wallet_balance,
+        token_price=user_create.token_price,
+    )
+    db.add(db_user)
+    db.commit()
+    db.refresh(db_user)
+    return db_user
+
+
+def update_user_password(db: Session, user: models.User, new_plain_pw: str):
+    user.hashed_password = auth.get_password_hash(new_plain_pw)
+    db.commit()
+
+
+def update_user_details(
+    db: Session,
+    user_to_update: models.User,
+    username: str,
+    file_limit: int,
+    token_price: float,
+):
+    user_to_update.username = username
+    user_to_update.file_limit = file_limit
+    user_to_update.token_price = token_price
+    db.commit()
+    db.refresh(user_to_update)
+
+
+# =============================================================================
+# 🟢  تراکنش و کیف پول
+# =============================================================================
+def create_transaction(
+    db: Session,
+    user_id: int,
+    amount: float,
+    description: str,
+    token_price: Optional[float] = None,
+):
+    tx = models.Transaction(
+        user_id=user_id,
+        amount=amount,
+        description=description,
+        token_price_at_transaction=token_price,
+        timestamp=_now_tehran(),
+    )
+    db.add(tx)
+    return tx
+
+
+def adjust_user_balance(db: Session, user: models.User, amount: float, description: str):
+    if amount == 0:
+        return
+    user.wallet_balance += amount
+    create_transaction(db, user.id, amount, description, user.token_price)
+    db.commit()
+    db.refresh(user)
+
+
+def debit_from_wallet(db: Session, user: models.User, cost: float, description: str):
+    db.refresh(user)
+    if user.wallet_balance < cost:
+        raise ValueError("موجودی ناکافی برای این عملیات")
+    user.wallet_balance -= cost
+    create_transaction(db, user.id, -cost, description, user.token_price)
+    db.commit()
+    db.refresh(user)
+
+
+# =============================================================================
+# 🟢  فایل‌های رونوشت
+# =============================================================================
+def create_transcription_record(
+    db: Session,
+    filename: str,
+    user_id: int,
+    lang: str,
+    original_filename: Optional[str] = None,
+) -> models.TranscriptionFile:
+    rec = models.TranscriptionFile(
+        user_id=user_id,
+        original_filename=original_filename or filename,
+        display_filename=filename,
+        language=lang,
+        status="queued",
+        timestamp=_now_tehran(),
+    )
+    db.add(rec)
+    db.commit()
+    db.refresh(rec)
+    return rec
+
+
+def set_task_id(db: Session, record_id: int, task_id: str):
+    rec = db.query(models.TranscriptionFile).get(record_id)
+    if rec:
+        rec.celery_task_id = task_id
+        db.commit()
+
+
+def update_transcription_status(db: Session, record_id: int, status: str):
+    rec = db.query(models.TranscriptionFile).get(record_id)
+    if rec:
+        rec.status = status
+        if status in ("completed", "failed", "canceled"):
+            rec.finished_at = _now_tehran()
+        db.commit()
+
+
+def finalize_job(
+    db: Session,
+    record: models.TranscriptionFile,
+    final_text: str,
+    duration: int,
+):
+    record.status = "completed"
+    record.final_result_text = final_text
+    record.processing_duration_seconds = duration
+
+    base = f"{record.id}_{record.original_filename.rsplit('.', 1)[0]}"
+    txt_name = f"{base}.txt"
+    with open(os.path.join("uploads", txt_name), "w", encoding="utf-8") as f:
+        f.write(final_text)
+    record.output_filename_txt = txt_name
+
+    doc = docx.Document()
+    doc.add_paragraph(final_text)
+    docx_name = f"{base}.docx"
+    doc.save(os.path.join("uploads", docx_name))
+    record.output_filename_docx = docx_name
+
+    db.commit()
+
+
+# ---- helpers for cancel ----
+def get_job(db: Session, job_id: int, owner: models.User):
+    q = db.query(models.TranscriptionFile).filter_by(id=job_id)
+    if owner.role != models.Role.admin:
+        q = q.filter_by(user_id=owner.id)
+    return q.first()
+
+
+# =============================================================================
+# 🟢  کوئری‌های رونوشت برای صفحات
+# =============================================================================
+def get_transcription(db: Session, record_id: int) -> models.TranscriptionFile | None:
+    """برمی‌گرداند یک TranscriptionFile بر اساس ID یا None."""
+    return db.query(models.TranscriptionFile).get(record_id)
+
+
+def get_user_transcriptions(db: Session, user_id: int, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.TranscriptionFile)
+        .filter(models.TranscriptionFile.user_id == user_id)
+        .order_by(models.TranscriptionFile.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+def get_user_transcriptions_count(db: Session, user_id: int) -> int:
+    return db.query(models.TranscriptionFile).filter(models.TranscriptionFile.user_id == user_id).count()
+
+
+def get_all_transcriptions(db: Session, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.TranscriptionFile)
+        .order_by(models.TranscriptionFile.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+def get_all_transcriptions_count(db: Session) -> int:
+    return db.query(models.TranscriptionFile).count()
+
+
+def get_transcriptions_by_ids(db: Session, user_id: int, job_ids: List[int]):
+    return (
+        db.query(models.TranscriptionFile)
+        .filter(
+            models.TranscriptionFile.id.in_(job_ids),
+            models.TranscriptionFile.user_id == user_id,
+        )
+        .all()
+    )
+
+
+# =============================================================================
+# 🟢  تراکنش‌ها (گزارش)
+# =============================================================================
+def get_user_transactions(db: Session, user_id: int, skip: int = 0, limit: int = 15):
+    return (
+        db.query(models.Transaction)
+        .filter(models.Transaction.user_id == user_id)
+        .order_by(models.Transaction.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+def get_user_transactions_count(db: Session, user_id: int) -> int:
+    return db.query(models.Transaction).filter(models.Transaction.user_id == user_id).count()
+
+
+def get_all_transactions(
+    db: Session,
+    username_filter: str | None = None,
+    skip: int = 0,
+    limit: int = 15,
+):
+    q = db.query(models.Transaction).join(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return (
+        q.order_by(models.Transaction.timestamp.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+def get_all_transactions_count(db: Session, username_filter: str | None = None) -> int:
+    q = db.query(models.Transaction).join(models.User)
+    if username_filter:
+        q = q.filter(models.User.username.contains(username_filter))
+    return q.count()
+
+
+# =============================================================================
+# 🟢  Settings
+# =============================================================================
+def get_setting(db: Session, key: str):
+    return db.query(models.Setting).filter(models.Setting.key == key).first()
+
+
+def update_setting(db: Session, key: str, value: str):
+    s = get_setting(db, key)
+    if s:
+        s.value = value
+    else:
+        s = models.Setting(key=key, value=value)
+        db.add(s)
+    db.commit()
+
+
+def upsert_setting(db: Session, key: str, value: str):
+    try:
+        setting = db.query(models.Setting).filter(models.Setting.key == key).one()
+        setting.value = value
+    except NoResultFound:
+        setting = models.Setting(key=key, value=value)
+        db.add(setting)
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+
+# =============================================================================
+# 🟢  API KEY CRUD
+# =============================================================================
+def _generate_api_key() -> str:
+    return uuid.uuid4().hex + uuid.uuid4().hex
+
+
+def create_api_key(db: Session, user: models.User) -> models.APIKey:
+    key = _generate_api_key()
+    api_key = models.APIKey(key=key, owner=user)
+    db.add(api_key)
+    db.commit()
+    db.refresh(api_key)
+    return api_key
+
+
+def get_api_key(db: Session, key_str: str) -> Optional[models.APIKey]:
+    return db.query(models.APIKey).filter(models.APIKey.key == key_str).first()
+
+
+def get_api_key_by_user(db: Session, user: models.User) -> Optional[models.APIKey]:
+    return (
+        db.query(models.APIKey)
+        .filter(models.APIKey.user_id == user.id, models.APIKey.is_active.is_(True))
+        .first()
+    )
+
+
+def deactivate_api_key(db: Session, api_key: models.APIKey):
+    api_key.is_active = False
+    db.commit()
+
+
+
+# app/database.py
+
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+# --- بازگشت به استفاده از دیتابیس محلی SQLite ---
+# این آدرس به برنامه می‌گوید که یک فایل به نام transcriber.db در ریشه پروژه ایجاد کند.
+SQLALCHEMY_DATABASE_URL = "sqlite:///./transcriber.db"
+
+# ساخت موتور SQLAlchemy برای اتصال به دیتابیس
+# آرگومان connect_args برای سازگاری با SQLite ضروری است
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
+)
+
+# ساخت یک کلاس Session برای ارتباط با دیتابیس در هر درخواست
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+# ساخت یک کلاس پایه برای تمام مدل‌های دیتابیس
+Base = declarative_base()
+
+
+# -*- coding: utf-8 -*-
+"""
+توابع کمکی/وابستگی‌های عمومی FastAPI
+"""
+from fastapi import Request, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.orm import Session
+from jose import JWTError, jwt
+
+from . import crud, models, auth, database
+
+# برای API-های صرفاً JSON
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+
+# --------------------------------------------------
+#  اتصال به دیتابیس (یک Session برای هر درخواست)
+# --------------------------------------------------
+def get_db():
+    db = database.SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+# --------------------------------------------------
+#  استخراج کاربر از «کوکی» (برای صفحات وب)
+# --------------------------------------------------
+async def get_current_user_from_cookie(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    کوکی  access_token حاوی رشته‌ای با فرمت «Bearer <jwt>» است.
+    در صورت اعتبار، رکورد کاربر را برمی‌گرداند.
+    """
+    token_cookie: str | None = request.cookies.get("access_token")
+
+    cred_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+    )
+
+    if not token_cookie:
+        raise cred_exc
+
+    try:
+        token_value = token_cookie.split(" ")[1]  # حذف «Bearer »
+        payload = jwt.decode(token_value, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username: str | None = payload.get("sub")
+        if username is None:
+            raise cred_exc
+    except (JWTError, IndexError):
+        raise cred_exc
+
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise cred_exc
+    return user
+
+
+# --------------------------------------------------
+#  استخراج کاربر از «هدر Authorization» (برای API)
+# --------------------------------------------------
+async def get_current_user_from_header(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+):
+    """
+    برای روت‌هایی که با OAuth2PasswordBearer محافظت می‌شوند.
+    """
+    cred_exc = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+    )
+
+    try:
+        payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+        username: str | None = payload.get("sub")
+        if username is None:
+            raise cred_exc
+    except JWTError:
+        raise cred_exc
+
+    user = crud.get_user_by_username(db, username=username)
+    if user is None:
+        raise cred_exc
+    return user
+
+
+# --------------------------------------------------
+#  بازرسی نقش‌ها
+# --------------------------------------------------
+async def get_current_admin(
+    current_user: models.User = Depends(get_current_user_from_cookie),
+):
+    """فقط مدیران (role == admin) مجازند."""
+    if current_user.role != models.Role.admin:
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_user
+
+
+async def get_current_employee_or_admin(
+    current_user: models.User = Depends(get_current_user_from_cookie),
+):
+    """هم اپراتور، هم مدیر."""
+    if current_user.role not in (models.Role.employee, models.Role.admin):
+        raise HTTPException(status_code=403, detail="Not enough permissions")
+    return current_user
+
+
+# --------------------------------------------------
+#  ⬇️⬇️⬇️  بخش جدید برای سازگاری با admin.py  ⬇️⬇️⬇️
+# --------------------------------------------------
+async def get_current_active_admin(
+    current_user: models.User = Depends(get_current_admin),
+):
+    """
+    سازگاری با نام قدیمی «get_current_active_admin».
+    همان بررسی نقش مدیر را انجام می‌دهد. در صورت داشتن فیلد
+    is_active می‌توانید اینجا نیز آن را چک کنید.
+    """
+    # مثالِ چکِ فعال‌بودن حساب:
+    # if hasattr(current_user, "is_active") and not current_user.is_active:
+    #     raise HTTPException(status_code=403, detail="Account disabled")
+    return current_user
+
+
+# app/main.py
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from .database import engine
+from . import models
+from .routers import (
+    auth   as auth_router,
+    jobs   as jobs_router,
+    user   as user_router,
+    admin  as admin_router,
+)
+from .templating import templates
+
+# بارگذاری تنظیمات محیطی
+load_dotenv()
+
+# تنظیم مسیرها
+BASE_DIR    = Path(__file__).resolve().parent.parent
+STATIC_DIR  = BASE_DIR / "static"
+UPLOADS_DIR = BASE_DIR / "uploads"
+for d in (STATIC_DIR, UPLOADS_DIR):
+    d.mkdir(parents=True, exist_ok=True)
+
+# ایجاد جداول پایگاه‌داده (در صورت نیاز)
+models.Base.metadata.create_all(bind=engine)
+
+# تعریف دسته‌های مستندات OpenAPI
+api_tags_metadata = [
+    {
+        "name": "🔐 احراز هویت",
+        "description": "ورود، خروج و مدیریت توکن کاربران.",
+    },
+    {
+        "name": "📥 فایل‌ها",
+        "description": "آپلود، پیاده‌سازی و اصلاح فایل‌های صوتی یا متنی.",
+    },
+    {
+        "name": "👤 کاربران",
+        "description": "مشاهده، ایجاد و ویرایش اطلاعات کاربران توسط ادمین.",
+    },
+    {
+        "name": "💰 کیف پول",
+        "description": "مشاهده و مدیریت تراکنش‌های مالی کاربران.",
+    },
+    {
+        "name": "⚙️ تنظیمات محتوا",
+        "description": "مدیریت محتوای صفحات درباره ما، قوانین، پرسش‌ها و تعرفه‌ها.",
+    },
+]
+
+# ایجاد برنامه اصلی FastAPI با تنظیمات مستندات
+app = FastAPI(
+    title="دستیار صوت و متن",
+    description="پیاده‌سازی و اصلاح صوت/متن با FastAPI",
+    version="5.2.1",
+    docs_url="/swagger",           # ← این خط مسیر Swagger را مشخص می‌کند
+    redoc_url=None                 # ← غیرفعال‌سازی ReDoc (در صورت نیاز)
+)
+
+
+# اتصال پوشه‌های استاتیک و فایل‌های آپلود
+app.mount("/static",  StaticFiles(directory=str(STATIC_DIR)),  name="static")
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
+
+# ------------------- روت‌های عمومی (صفحات اصلی سایت) -------------------
+
+@app.get("/", response_class=HTMLResponse, tags=["🔐 احراز هویت"])
+async def read_root(request: Request):
+    """صفحهٔ ورود به سیستم."""
+    return templates.TemplateResponse("login.html", {"request": request, "user": None})
+
+
+@app.get("/terms", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def terms_page(request: Request):
+    return templates.TemplateResponse("terms.html", {"request": request})
+
+@app.get("/about", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def about_page(request: Request):
+    return templates.TemplateResponse("about.html", {"request": request})
+
+@app.get("/faq", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def faq_page(request: Request):
+    return templates.TemplateResponse("faq.html", {"request": request})
+
+@app.get("/pricing", response_class=HTMLResponse, tags=["⚙️ تنظیمات محتوا"])
+def pricing_page(request: Request):
+    return templates.TemplateResponse("pricing.html", {"request": request})
+
+
+@app.get("/change-password", response_class=HTMLResponse, tags=["🔐 احراز هویت"])
+async def change_password_page(request: Request):
+    """صفحهٔ تغییر رمز عبور (نمایش فرم؛ منطق در routers/user.py)"""
+    return templates.TemplateResponse("change_password.html", {"request": request})
+
+@app.get("/api-docs", response_class=HTMLResponse)
+def api_docs_page(request: Request):
+    return templates.TemplateResponse("api_docs.html", {"request": request})
+
+
+# ------------------- اتصال روت‌های داخلی (ماژولار) -------------------
+app.include_router(auth_router.router,  tags=["🔐 احراز هویت"])
+app.include_router(jobs_router.router,  tags=["📥 فایل‌ها"])
+app.include_router(user_router.router,  tags=["👤 کاربران"])
+app.include_router(admin_router.router, tags=["👤 کاربران", "💰 کیف پول", "⚙️ تنظیمات محتوا"])
+
+

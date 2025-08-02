@@ -1,0 +1,58 @@
+<!-- تب «فعالیت کاربران» -->
+<h2 style="margin-bottom:20px">تاریخچه فعالیت‌ها</h2>
+
+<p>در این جدول، تاریخچه تمام فعالیت‌های مدیران و کارمندان نمایش داده می‌شود.</p>
+
+{% if transcriptions %}
+<table data-datatables>
+    <thead>
+        <tr>
+            <th>کاربر</th>
+            <th>نقش</th>
+            <th>فایل</th>
+            <th>نوع درخواست</th>
+            <th>زمان</th>
+            <th>وضعیت</th>
+            <th>عملیات</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for f in transcriptions %}
+        <tr>
+            <td>{{ f.owner.username }}</td>
+            <td>
+                {% if f.owner.role.name=='admin' %}مدیر
+                {% elif f.owner.role.name=='employee' %}کارمند
+                {% else %}مشتری{% endif %}
+            </td>
+            <td>{{ f.original_filename.replace('(AI) ','').replace('(RAW) ','').replace('(اصلاح متنی) ','') }}</td>
+            <td>
+                {% if '(AI)' in f.original_filename %}پیاده‌سازی و اصلاح
+                {% elif '(RAW)' in f.original_filename %}پیاده‌سازی خام
+                {% elif '(اصلاح متنی)' in f.original_filename %}اصلاح متن
+                {% else %}نامشخص{% endif %}
+            </td>
+            <td>{{ f.timestamp_local.strftime('%Y-%m-%d %H:%M') }}</td>
+            <td>
+                {% if f.status=='completed' %}<span style="color:green">تکمیل شد</span>
+                {% elif f.status=='failed' %}<span style="color:red">ناموفق</span>
+                {% elif f.status=='canceled' %}<span style="color:grey">لغو</span>
+                {% else %}<span style="color:orange">در حال پردازش…</span>{% endif %}
+            </td>
+            <td>
+                {% if f.status=='completed' and f.owner.role.name!='customer' %}
+                    <a href="/download/{{ f.id }}/txt">TXT</a>
+                    <a href="/download/{{ f.id }}/docx" style="margin-right:10px">DOCX</a>
+                {% elif f.status in ['pending','processing'] %}
+                    <form action="/transcribe/{{ f.id }}/cancel" method="post" style="display:inline">
+                        <button class="cancel-btn">لغو</button>
+                    </form>
+                {% else %}-{% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>هیچ فعالیتی ثبت نشده است.</p>
+{% endif %}
